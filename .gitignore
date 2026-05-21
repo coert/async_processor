@@ -10,4 +10,5 @@ wheels/
 .venv
 # Test artifacts
 .pytest_cache/
-/data/
+/data/*
+!/data/1-input.mp4
