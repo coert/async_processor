@@ -12,3 +12,4 @@ wheels/
 .pytest_cache/
 /data/*
 !/data/1-input.mp4
+!/data/aruco_dict.json
