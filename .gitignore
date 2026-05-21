@@ -10,3 +10,4 @@ wheels/
 .venv
 # Test artifacts
 .pytest_cache/
+/data/

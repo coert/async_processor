@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from src import (
+    ArucoDetectionModule,
     AsyncProcessor,
     FrameRateLoggerModule,
     GMMColorMaskModule,
@@ -30,6 +31,8 @@ GMM_MODEL_PATH = Path("data/color_classifier_gmm.joblib")
 GMM_FRAME_QUEUE = "gmm_frames"
 MARKER_FRAME_QUEUE = "marker_frames"
 COLOR_MASK_QUEUE = "color_masks"
+ARUCO_FRAME_QUEUE = "aruco_frames"
+ARUCO_DETECTIONS_QUEUE = "aruco_detections"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -65,7 +68,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Write marker-rectifier debug images to data/debug/.",
+        help="Write processing debug images to data/debug/.",
     )
     return parser.parse_args(argv)
 
@@ -73,13 +76,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 async def run_app(args: argparse.Namespace) -> None:
     processor = AsyncProcessor()
     gmm_model_exists = GMM_MODEL_PATH.exists()
-    marker_input_queue = MARKER_FRAME_QUEUE if gmm_model_exists else ENHANCED_FRAME_QUEUE
 
     processor.create_queue(FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(ENHANCED_FRAME_QUEUE, maxsize=args.queue_size)
+    processor.create_queue(MARKER_FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(MARKER_CUTOUT_QUEUE, maxsize=args.queue_size)
+    processor.create_queue(ARUCO_FRAME_QUEUE, maxsize=args.queue_size)
+    processor.create_queue(ARUCO_DETECTIONS_QUEUE)
     if gmm_model_exists:
-        processor.create_queue(MARKER_FRAME_QUEUE, maxsize=args.queue_size)
         processor.create_queue(GMM_FRAME_QUEUE, maxsize=args.queue_size)
         processor.create_queue(COLOR_MASK_QUEUE)
 
@@ -90,14 +94,18 @@ async def run_app(args: argparse.Namespace) -> None:
             output_queue=ENHANCED_FRAME_QUEUE,
         )
     )
+    fanout_output_queues = [MARKER_FRAME_QUEUE, ARUCO_FRAME_QUEUE]
     if gmm_model_exists:
-        processor.register_module(
-            QueueFanoutModule(
-                name="enhanced-frame-fanout",
-                input_queue=ENHANCED_FRAME_QUEUE,
-                output_queues=[MARKER_FRAME_QUEUE, GMM_FRAME_QUEUE],
-            )
+        fanout_output_queues.append(GMM_FRAME_QUEUE)
+    processor.register_module(
+        QueueFanoutModule(
+            name="enhanced-frame-fanout",
+            input_queue=ENHANCED_FRAME_QUEUE,
+            output_queues=fanout_output_queues,
         )
+    )
+
+    if gmm_model_exists:
         processor.register_module(
             GMMColorMaskModule(
                 name="gmm-color-mask",
@@ -115,12 +123,22 @@ async def run_app(args: argparse.Namespace) -> None:
     processor.register_module(
         MarkerRectificationModule(
             name="marker-rectifier",
-            input_queue=marker_input_queue,
+            input_queue=MARKER_FRAME_QUEUE,
             output_queue=MARKER_CUTOUT_QUEUE,
             debug=args.debug,
             debug_dir=Path("data/debug"),
         )
     )
+    processor.register_module(
+        ArucoDetectionModule(
+            name="aruco-detector",
+            input_queue=ARUCO_FRAME_QUEUE,
+            output_queue=ARUCO_DETECTIONS_QUEUE,
+            debug=args.debug,
+            debug_dir=Path("data/debug"),
+        )
+    )
+    logger.info("ArUco detector module enabled on input queue %s", ARUCO_FRAME_QUEUE)
     processor.register_module(
         FrameRateLoggerModule(
             name="frame-rate-logger",

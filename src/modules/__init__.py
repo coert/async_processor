@@ -1,3 +1,4 @@
+from .aruco_detector import ArucoDetectionModule, ArucoDetectionResult, ArucoMarkerDetection
 from .base import BaseModule, ModuleContext, ModuleOutput
 from .frame_rate_logger import FrameRateLoggerModule
 from .gmm_color_mask import GMMColorMaskModule
@@ -6,6 +7,9 @@ from .marker_rectifier import MarkerRectificationModule
 from .queue_fanout import QueueFanoutModule
 
 __all__ = [
+    "ArucoDetectionModule",
+    "ArucoDetectionResult",
+    "ArucoMarkerDetection",
     "BaseModule",
     "FrameRateLoggerModule",
     "GMMColorMaskModule",

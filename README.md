@@ -2,7 +2,7 @@
 
 A lightweight `asyncio.Queue` based processing loop. Each module consumes one dedicated input queue and returns routed messages for arbitrary output queues.
 
-The top-level program reads frames from `data/1-input.mp4` by default, enhances them, rectifies detected marker cutouts, loops the video when it ends, and logs processing FPS once per second. If `data/color_classifier_gmm.joblib` exists, the loop also runs GMM color masking on enhanced frames.
+The top-level program reads frames from `data/1-input.mp4` by default, enhances them, rectifies detected marker cutouts, runs ArUco marker detection on the enhanced frames, loops the video when it ends, and logs processing FPS once per second. If `data/color_classifier_gmm.joblib` exists, the loop also runs GMM color masking on enhanced frames.
 
 ## Run
 
@@ -31,7 +31,9 @@ Logging is colorized by severity. Use `--log-level DEBUG` for queue/module lifec
 Without a GMM model:
 
 ```text
-frames -> image-enhancer -> enhanced_frames -> marker-rectifier -> marker_cutouts -> frame-rate-logger
+frames -> image-enhancer -> enhanced_frames -> enhanced-frame-fanout
+                                              -> marker_frames -> marker-rectifier -> marker_cutouts -> frame-rate-logger
+                                              -> aruco_frames  -> aruco-detector   -> aruco_detections
 ```
 
 With `data/color_classifier_gmm.joblib` present:
@@ -39,10 +41,11 @@ With `data/color_classifier_gmm.joblib` present:
 ```text
 frames -> image-enhancer -> enhanced_frames -> enhanced-frame-fanout
                                               -> marker_frames -> marker-rectifier -> marker_cutouts -> frame-rate-logger
+                                              -> aruco_frames  -> aruco-detector   -> aruco_detections
                                               -> gmm_frames    -> gmm-color-mask   -> color_masks
 ```
 
-`color_masks` is intentionally unbounded in the main loop so mask generation does not block the marker pipeline while no downstream consumer is registered yet.
+`aruco_detections` and `color_masks` are intentionally unbounded in the main loop so generated side outputs do not block the marker pipeline while no downstream consumer is registered yet. ArUco detection is fed directly from enhanced frames and is never routed through the GMM branch.
 
 ## Available Modules
 
@@ -117,6 +120,34 @@ With `debug=True`, the latest mask is overwritten at:
 
 ```text
 data/debug/gmm_color_mask.png
+```
+
+### `ArucoDetectionModule`
+
+Detects OpenCV ArUco markers in enhanced BGR frames using a predefined dictionary. When markers are found, it outputs an `ArucoDetectionResult` containing the input image, marker ids, marker corners, and rejected candidates. Frames without markers are dropped.
+
+```python
+from src import ArucoDetectionModule
+
+processor.create_queue('aruco_frames')
+processor.create_queue('aruco_detections')
+processor.register_module(
+    ArucoDetectionModule(
+        name='aruco-detector',
+        input_queue='aruco_frames',
+        output_queue='aruco_detections',
+        dictionary_name='DICT_5X5_1000',
+        debug=False,
+    )
+)
+```
+
+With `debug=True`, the detector overwrites these files under `data/debug/`:
+
+```text
+aruco_input.png
+aruco_detected_markers.png
+aruco_rejected_candidates.png
 ```
 
 ### `QueueFanoutModule`
@@ -206,6 +237,25 @@ data/color_classifier_gmm.joblib
 ```
 
 The CSV stores label, pixel coordinates, RGB, BGR, and Lab values. The joblib model is inference-compatible with the main loop; once it exists, `main.py` automatically enables the GMM mask module.
+
+
+## ArUco Marker Generator
+
+`generate_aruco_markers.py` converts the vendored arucogen `data/aruco_dict.json` into PNG marker images. By default it writes every standard non-AprilTag dictionary to `data/aruco/` and creates `data/aruco/manifest.csv`.
+
+```sh
+uv run python generate_aruco_markers.py
+```
+
+Useful options:
+
+```sh
+uv run python generate_aruco_markers.py --dictionary 4x4_1000
+uv run python generate_aruco_markers.py --image-size 1024
+uv run python generate_aruco_markers.py --include-apriltag
+```
+
+The default output includes `aruco`, `4x4_1000`, `5x5_1000`, `6x6_1000`, `7x7_1000`, and `mip_36h12`. Marker images are grouped by dictionary name under `data/aruco/`.
 
 ## Minimal Module
 

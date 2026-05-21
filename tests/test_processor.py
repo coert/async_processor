@@ -682,7 +682,7 @@ def test_marker_rectification_debug_enabled_writes_failure_images(tmp_path: Path
     asyncio.run(scenario())
 
 
-def test_main_uses_direct_marker_path_when_gmm_model_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_main_fans_out_enhanced_frames_when_gmm_model_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     class SpyMarkerRectificationModule(BaseModule[np.ndarray]):
@@ -705,6 +705,39 @@ def test_main_uses_direct_marker_path_when_gmm_model_missing(monkeypatch: pytest
         ) -> None:
             return None
 
+    class SpyArucoDetectionModule(BaseModule[np.ndarray]):
+        def __init__(
+            self,
+            name: str,
+            input_queue: str,
+            output_queue: str,
+            **kwargs: object,
+        ) -> None:
+            super().__init__(name, input_queue)
+            captured["aruco_input_queue"] = input_queue
+            captured["aruco_output_queue"] = output_queue
+            captured["aruco_kwargs"] = kwargs
+
+        async def process(
+            self,
+            message: Message[np.ndarray],
+            context: ModuleContext,
+        ) -> None:
+            return None
+
+    class SpyQueueFanoutModule(BaseModule[np.ndarray]):
+        def __init__(self, name: str, input_queue: str, output_queues: list[str]) -> None:
+            super().__init__(name, input_queue)
+            captured["fanout_input_queue"] = input_queue
+            captured["fanout_output_queues"] = output_queues
+
+        async def process(
+            self,
+            message: Message[np.ndarray],
+            context: ModuleContext,
+        ) -> None:
+            return None
+
     class NoopProcessorLoop:
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
@@ -715,13 +748,19 @@ def test_main_uses_direct_marker_path_when_gmm_model_missing(monkeypatch: pytest
     missing_model_path = tmp_path / "missing.joblib"
     monkeypatch.setattr(app_main, "GMM_MODEL_PATH", missing_model_path)
     monkeypatch.setattr(app_main, "MarkerRectificationModule", SpyMarkerRectificationModule)
+    monkeypatch.setattr(app_main, "ArucoDetectionModule", SpyArucoDetectionModule)
+    monkeypatch.setattr(app_main, "QueueFanoutModule", SpyQueueFanoutModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
     args = app_main.parse_args(["--video-path", str(TEST_VIDEO_PATH)])
 
     asyncio.run(app_main.run_app(args))
 
-    assert captured["marker_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
+    assert captured["fanout_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
+    assert captured["fanout_output_queues"] == [app_main.MARKER_FRAME_QUEUE, app_main.ARUCO_FRAME_QUEUE]
+    assert captured["marker_input_queue"] == app_main.MARKER_FRAME_QUEUE
     assert captured["marker_output_queue"] == app_main.MARKER_CUTOUT_QUEUE
+    assert captured["aruco_input_queue"] == app_main.ARUCO_FRAME_QUEUE
+    assert captured["aruco_output_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
 
 
 def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -766,6 +805,25 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
         ) -> None:
             return None
 
+    class SpyArucoDetectionModule(BaseModule[np.ndarray]):
+        def __init__(
+            self,
+            name: str,
+            input_queue: str,
+            output_queue: str,
+            **kwargs: object,
+        ) -> None:
+            super().__init__(name, input_queue)
+            captured["aruco_input_queue"] = input_queue
+            captured["aruco_output_queue"] = output_queue
+
+        async def process(
+            self,
+            message: Message[np.ndarray],
+            context: ModuleContext,
+        ) -> None:
+            return None
+
     class SpyQueueFanoutModule(BaseModule[np.ndarray]):
         def __init__(self, name: str, input_queue: str, output_queues: list[str]) -> None:
             super().__init__(name, input_queue)
@@ -791,6 +849,7 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
     monkeypatch.setattr(app_main, "GMM_MODEL_PATH", model_path)
     monkeypatch.setattr(app_main, "MarkerRectificationModule", SpyMarkerRectificationModule)
     monkeypatch.setattr(app_main, "GMMColorMaskModule", SpyGMMColorMaskModule)
+    monkeypatch.setattr(app_main, "ArucoDetectionModule", SpyArucoDetectionModule)
     monkeypatch.setattr(app_main, "QueueFanoutModule", SpyQueueFanoutModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
     args = app_main.parse_args(["--video-path", str(TEST_VIDEO_PATH)])
@@ -798,9 +857,11 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
     asyncio.run(app_main.run_app(args))
 
     assert captured["fanout_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
-    assert captured["fanout_output_queues"] == [app_main.MARKER_FRAME_QUEUE, app_main.GMM_FRAME_QUEUE]
+    assert captured["fanout_output_queues"] == [app_main.MARKER_FRAME_QUEUE, app_main.ARUCO_FRAME_QUEUE, app_main.GMM_FRAME_QUEUE]
     assert captured["marker_input_queue"] == app_main.MARKER_FRAME_QUEUE
     assert captured["marker_output_queue"] == app_main.MARKER_CUTOUT_QUEUE
+    assert captured["aruco_input_queue"] == app_main.ARUCO_FRAME_QUEUE
+    assert captured["aruco_output_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["gmm_input_queue"] == app_main.GMM_FRAME_QUEUE
     assert captured["gmm_output_queue"] == app_main.COLOR_MASK_QUEUE
     assert captured["gmm_kwargs"] == {"model_path": model_path, "debug": False, "debug_dir": Path("data/debug")}
