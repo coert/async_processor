@@ -109,3 +109,25 @@ class LoopingVideoSource:
                 await asyncio.sleep(delay)
 
         self._last_frame_at = time.monotonic()
+
+class FiniteVideoSource(LoopingVideoSource):
+    async def poll(self) -> VideoFrame | None:
+        await self._pace()
+
+        ok, frame = self._capture.read()
+        if not ok:
+            logger.info('Video ended; finite source exhausted: %s', self.path)
+            return None
+
+        position = int(self._capture.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+        frame_index = max(0, position - 1)
+        timestamp_seconds = (
+            float(self._capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+        )
+
+        return VideoFrame(
+            image=frame,
+            frame_index=frame_index,
+            timestamp_seconds=timestamp_seconds,
+            loop_count=0,
+        )

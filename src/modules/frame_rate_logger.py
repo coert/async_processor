@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from ..messages import Message
+from ..image import ImageFrame
 from ..video import VideoFrame
 from .base import BaseModule, ModuleContext
 
@@ -53,6 +54,6 @@ class FrameRateLoggerModule(BaseModule[Any]):
         return None
 
     def _loop_count(self, message: Message[Any]) -> int | str:
-        if isinstance(message.payload, VideoFrame):
+        if isinstance(message.payload, (ImageFrame, VideoFrame)):
             return message.payload.loop_count
         return message.metadata.get("loop_count", "unknown")

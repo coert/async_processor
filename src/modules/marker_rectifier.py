@@ -11,6 +11,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from ..messages import Message, RoutedMessage
+from ..image import ImageFrame
 from ..video import VideoFrame
 from .base import BaseModule, ModuleContext
 from .image_enhancer import EnhancementMode, apply_enhancement, validate_color_image
@@ -660,8 +661,8 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     return FitResult(quad=best_quad, score=best_score, rejected=rejected_debug)
 
 
-def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np.ndarray:
-    dst_square = np.array(
+def square_cutout_points(out_size: int) -> np.ndarray:
+    return np.array(
         [
             [0, 0],
             [out_size - 1, 0],
@@ -670,8 +671,22 @@ def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np
         ],
         dtype=np.float32,
     )
-    matrix = cv2.getPerspectiveTransform(quad.astype(np.float32), dst_square)
-    return cv2.warpPerspective(image, matrix, (out_size, out_size))
+
+
+def perspective_transform_matrices(
+    quad: np.ndarray,
+    out_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    dst_square = square_cutout_points(out_size)
+    source_quad = quad.astype(np.float32)
+    source_to_cutout = cv2.getPerspectiveTransform(source_quad, dst_square)
+    cutout_to_source = cv2.getPerspectiveTransform(dst_square, source_quad)
+    return source_to_cutout, cutout_to_source
+
+
+def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np.ndarray:
+    source_to_cutout, _ = perspective_transform_matrices(quad, out_size)
+    return cv2.warpPerspective(image, source_to_cutout, (out_size, out_size))
 
 
 def _draw_line_set(canvas: np.ndarray, lines: np.ndarray | None, color: tuple[int, int, int], thickness: int) -> None:
@@ -731,7 +746,7 @@ def _write_debug_image(path: Path, image: np.ndarray) -> None:
         logger.warning("Failed to write marker rectifier debug image: %s", path)
 
 
-class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
+class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
     def __init__(
         self,
         name: str,
@@ -792,11 +807,11 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
 
     async def process(
         self,
-        message: Message[VideoFrame | np.ndarray],
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray] | None:
         payload = message.payload
-        image = payload.image if isinstance(payload, VideoFrame) else payload
+        image = payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
         validate_color_image(image)
 
         line_debug: list[LineDebug] = []
@@ -810,17 +825,26 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
             logger.warning("Dropping frame without detected marker: %s", exc)
             return None
 
-        cutout = warp_square_cutout(image, fit_result.quad, self.out_size)
+        source_to_cutout, cutout_to_source = perspective_transform_matrices(
+            fit_result.quad,
+            self.out_size,
+        )
+        cutout = cv2.warpPerspective(image, source_to_cutout, (self.out_size, self.out_size))
         self._write_debug_images(image, line_debug, quad=fit_result.quad, cutout=cutout)
         metadata: dict[str, Any] = dict(message.metadata)
         metadata.update(
             {
                 "quad": fit_result.quad.tolist(),
+                "source_quad": fit_result.quad.tolist(),
                 "score": float(fit_result.score),
                 "input_shape": tuple(int(value) for value in image.shape),
+                "source_frame_image": image.copy(),
+                "cutout_size": int(self.out_size),
+                "source_to_cutout_homography": source_to_cutout.tolist(),
+                "cutout_to_source_homography": cutout_to_source.tolist(),
             }
         )
-        if isinstance(payload, VideoFrame):
+        if isinstance(payload, (ImageFrame, VideoFrame)):
             metadata.update(
                 {
                     "frame_index": payload.frame_index,

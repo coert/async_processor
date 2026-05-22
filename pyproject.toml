@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "ffmpeg-python>=0.2.0",
     "ipykernel>=7.2.0",
     "ipywidgets>=8.1.8",
     "joblib>=1.5.3",
@@ -15,6 +16,7 @@ dependencies = [
     "pillow>=12.2.0",
     "scikit-learn>=1.8.0",
     "scipy>=1.17.1",
+    "yt-dlp>=2026.3.17",
 ]
 
 [dependency-groups]

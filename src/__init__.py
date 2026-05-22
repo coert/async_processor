@@ -1,20 +1,25 @@
 from .logging_config import ColorFormatter, configure_logging
+from .image import FiniteImageSource, ImageFrame, ImageSourceError, LoopingImageSource
 from .loop import EmptyInputSource, InputSource, ProcessorLoop, SignalStopper
 from .messages import Message, RoutedMessage
 from .modules import (
     ArucoDetectionModule,
     ArucoDetectionResult,
+    ArucoMarkerAnnotationModule,
     ArucoMarkerDetection,
     BaseModule,
+    FfmpegVideoWriterError,
+    FfmpegVideoWriterModule,
     FrameRateLoggerModule,
     GMMColorMaskModule,
     ImageEnhancementModule,
     MarkerRectificationModule,
+    OpticalFlowMarkerTrackingModule,
     ModuleContext,
     ModuleOutput,
     QueueFanoutModule,
 )
-from .video import LoopingVideoSource, VideoFrame, VideoSourceError
+from .video import FiniteVideoSource, LoopingVideoSource, VideoFrame, VideoSourceError
 from .processor import (
     AsyncProcessor,
     DuplicateModuleError,
@@ -26,6 +31,7 @@ from .processor import (
 __all__ = [
     "ArucoDetectionModule",
     "ArucoDetectionResult",
+    "ArucoMarkerAnnotationModule",
     "ArucoMarkerDetection",
     "AsyncProcessor",
     "BaseModule",
@@ -34,12 +40,20 @@ __all__ = [
     "DuplicateQueueError",
     "configure_logging",
     "EmptyInputSource",
+    "FfmpegVideoWriterError",
+    "FfmpegVideoWriterModule",
+    "FiniteImageSource",
+    "FiniteVideoSource",
     "FrameRateLoggerModule",
     "GMMColorMaskModule",
     "ImageEnhancementModule",
+    "ImageFrame",
+    "ImageSourceError",
     "InputSource",
+    "LoopingImageSource",
     "LoopingVideoSource",
     "MarkerRectificationModule",
+    "OpticalFlowMarkerTrackingModule",
     "Message",
     "ModuleContext",
     "ModuleOutput",

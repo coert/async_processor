@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from ..messages import Message, RoutedMessage
+from ..image import ImageFrame
 from ..video import VideoFrame
 from .base import BaseModule, ModuleContext
 
@@ -19,6 +20,7 @@ T_MIN = 0.15
 GAMMA = 1.1
 
 EnhancementMode = Literal["underwater"] | None
+ORIGINAL_FRAME_METADATA_KEY = "original_frame_image"
 
 
 def white_balance_underwater(image: np.ndarray) -> np.ndarray:
@@ -108,7 +110,7 @@ def validate_color_image(image: np.ndarray) -> None:
         raise ValueError("Image payload must use uint8 dtype.")
 
 
-class ImageEnhancementModule(BaseModule[VideoFrame | np.ndarray]):
+class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
     def __init__(
         self,
         name: str,
@@ -125,23 +127,26 @@ class ImageEnhancementModule(BaseModule[VideoFrame | np.ndarray]):
 
     async def process(
         self,
-        message: Message[VideoFrame | np.ndarray],
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
-    ) -> RoutedMessage[VideoFrame | np.ndarray]:
+    ) -> RoutedMessage[ImageFrame | VideoFrame | np.ndarray]:
         payload = message.payload
-        if isinstance(payload, VideoFrame):
+        metadata = dict(message.metadata)
+        if isinstance(payload, (ImageFrame, VideoFrame)):
+            metadata.setdefault(ORIGINAL_FRAME_METADATA_KEY, payload.image.copy())
             enhanced_image = apply_enhancement(payload.image, self.mode)
-            enhanced_payload: VideoFrame | np.ndarray = replace(
+            enhanced_payload: ImageFrame | VideoFrame | np.ndarray = replace(
                 payload,
                 image=enhanced_image,
             )
         else:
+            metadata.setdefault(ORIGINAL_FRAME_METADATA_KEY, payload.copy())
             enhanced_payload = apply_enhancement(payload, self.mode)
 
         return RoutedMessage(
             destination=self.output_queue,
             message=Message(
                 payload=enhanced_payload,
-                metadata=message.metadata,
+                metadata=metadata,
             ),
         )

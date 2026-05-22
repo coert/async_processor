@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Iterable
 from typing import Any, cast
@@ -209,16 +210,36 @@ class AsyncProcessor:
     async def _collect_tasks(self, *, raise_errors: bool) -> None:
         if not self._tasks:
             self._running = False
+            await self._close_modules()
             return
 
         tasks = list(self._tasks.values())
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        close_error = await self._close_modules()
         self._tasks.clear()
         self._running = False
         self._stopping = False
         logger.info("Processor stopped")
 
         if raise_errors:
+            if close_error is not None:
+                raise close_error
             for result in results:
                 if isinstance(result, BaseException):
                     raise result
+
+    async def _close_modules(self) -> BaseException | None:
+        captured_error: BaseException | None = None
+        for module in self._modules.values():
+            close = getattr(module, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except BaseException as exc:
+                logger.exception("Module close hook failed: %s", module.name)
+                if captured_error is None:
+                    captured_error = exc
+        return captured_error

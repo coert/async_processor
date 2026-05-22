@@ -8,6 +8,7 @@ import joblib
 import numpy as np
 
 from ..messages import Message, RoutedMessage
+from ..image import ImageFrame
 from ..video import VideoFrame
 from .base import BaseModule, ModuleContext
 from .image_enhancer import validate_color_image
@@ -21,7 +22,7 @@ REQUIRED_MODEL_KEYS = {
 }
 
 
-class GMMColorMaskModule(BaseModule[VideoFrame | np.ndarray]):
+class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
     def __init__(
         self,
         name: str,
@@ -115,15 +116,15 @@ class GMMColorMaskModule(BaseModule[VideoFrame | np.ndarray]):
 
     async def process(
         self,
-        message: Message[VideoFrame | np.ndarray],
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray]:
         payload = message.payload
-        image = payload.image if isinstance(payload, VideoFrame) else payload
+        image = payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
         validate_color_image(image)
 
         metadata: dict[str, Any] = dict(message.metadata)
-        if isinstance(payload, VideoFrame):
+        if isinstance(payload, (ImageFrame, VideoFrame)):
             metadata.update(
                 {
                     "frame_index": payload.frame_index,
