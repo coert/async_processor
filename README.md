@@ -1,8 +1,21 @@
 # async-processor
 
+## Test Frame Helper
+
+For a quick single-frame debug/export run, use the included `test_frame.sh` helper script:
+
+```sh
+./test_frame.sh
+./test_frame.sh path/to/frame.jpg
+```
+
+It runs `main.py` through `uv` with `--output-video --debug`, uses `data/test_frame.jpg` by default, and writes the annotated MP4 plus debug images under `data/debug/`.
+
+## Overview
+
 A lightweight `asyncio.Queue` based processing loop. Each module consumes one dedicated input queue and returns routed messages for arbitrary output queues.
 
-The top-level program reads frames from `data/1-input.mp4` by default, enhances them, rectifies detected marker cutouts, runs ArUco marker detection on the enhanced frames, loops the video when it ends, and logs processing FPS once per second. If `data/color_classifier_gmm.joblib` exists, the loop also runs GMM color masking on enhanced frames.
+The top-level program reads frames from `data/1-input.mp4` by default, or from image files supplied with `--input-path`, enhances them, tracks ArUco marker corners with optical flow, falls back to marker rectification plus ArUco detection when confidence is low, annotates the source frame, loops the input when it ends, and logs processing FPS once per second. If `data/color_classifier_gmm.joblib` exists, the live loop also runs GMM color masking on enhanced frames.
 
 ## Run
 
@@ -19,12 +32,17 @@ uv run pytest
 Useful options:
 
 ```sh
-uv run python main.py --video-path data/1-input.mp4
+uv run python main.py --input-path data/1-input.mp4
+uv run python main.py --input-path "data/frames/*.png"
+uv run python main.py --input-path "data/aruco/video-2/frame_[0006-0010].jpg"
+uv run python main.py --input-path data/a.png data/b.jpg "captures/*.jpeg"
 uv run python main.py --no-realtime --log-level DEBUG
+uv run python main.py --output-video --debug
+uv run python main.py --output-video data/debug/custom_annotated.mp4 --output-fps 12
 uv run python main.py --debug --no-color
 ```
 
-Logging is colorized by severity. Use `--log-level DEBUG` for queue/module lifecycle logs, or `--no-color` when writing logs to a plain file.
+Logging is colorized by severity. Use `--log-level DEBUG` for queue/module lifecycle logs, or `--no-color` when writing logs to a plain file. `--output-video` processes the input once with finite image/video sources, writes an annotated MP4, and exits. Without `--output-video`, video and image inputs loop until interrupted.
 
 ## Main Pipeline
 
@@ -32,20 +50,25 @@ Without a GMM model:
 
 ```text
 frames -> image-enhancer -> enhanced_frames -> enhanced-frame-fanout
-                                              -> marker_frames -> marker-rectifier -> marker_cutouts -> frame-rate-logger
-                                              -> aruco_frames  -> aruco-detector   -> aruco_detections
+                                              -> marker_frames -> optical-flow-marker-tracker -> aruco_detections -> aruco-marker-annotator -> annotated_frames -> frame-rate-logger
 ```
 
 With `data/color_classifier_gmm.joblib` present:
 
 ```text
 frames -> image-enhancer -> enhanced_frames -> enhanced-frame-fanout
-                                              -> marker_frames -> marker-rectifier -> marker_cutouts -> frame-rate-logger
-                                              -> aruco_frames  -> aruco-detector   -> aruco_detections
+                                              -> marker_frames -> optical-flow-marker-tracker -> aruco_detections -> aruco-marker-annotator -> annotated_frames -> frame-rate-logger
                                               -> gmm_frames    -> gmm-color-mask   -> color_masks
 ```
 
-`aruco_detections` and `color_masks` are intentionally unbounded in the main loop so generated side outputs do not block the marker pipeline while no downstream consumer is registered yet. ArUco detection is fed directly from enhanced frames and is never routed through the GMM branch.
+For `--output-video`, the frame-rate logger is replaced by `ffmpeg-video-writer`:
+
+```text
+frames -> image-enhancer -> enhanced_frames -> enhanced-frame-fanout
+                                              -> marker_frames -> optical-flow-marker-tracker -> aruco_detections -> aruco-marker-annotator -> annotated_frames -> ffmpeg-video-writer
+```
+
+`color_masks` is intentionally unbounded in the live loop so generated side output does not block the marker pipeline while no downstream consumer is registered yet. The GMM side branch is disabled during video export. The optical-flow marker tracker runs on the marker branch and performs rectification plus ArUco detection internally only when it needs to refresh tracking state.
 
 ## Available Modules
 
@@ -97,7 +120,9 @@ marker_rectified_cutout.png
 
 ### `GMMColorMaskModule`
 
-Loads `data/color_classifier_gmm.joblib` and converts BGR images into single-channel black/white masks. The model must be a joblib dict with `query_gmm`, `non_query_gmm`, `query_prior`, and `non_query_prior`.
+Loads `data/color_classifier_gmm.joblib` and converts BGR images into single-channel black/white masks. The model compares the likelihood of each pixel under two Gaussian mixture models: one trained on the target pipeline color and one trained on background/non-pipeline samples. For a concise visual explanation of color classification with Gaussian mixture models, see the CMSC426 color segmentation notes: <https://cmsc426.github.io/colorseg/>.
+
+The model must be a joblib dict with `query_gmm`, `non_query_gmm`, `query_prior`, and `non_query_prior`.
 
 ```python
 from pathlib import Path
@@ -122,21 +147,44 @@ With `debug=True`, the latest mask is overwritten at:
 data/debug/gmm_color_mask.png
 ```
 
+### `OpticalFlowMarkerTrackingModule`
+
+Tracks previously detected ArUco marker corners frame-to-frame with pyramidal Lucas-Kanade optical flow. When tracking confidence is too low, or when no markers remain in frame, it refreshes state by running `MarkerRectificationModule` and `ArucoDetectionModule` internally. Optical-flow outputs use source-frame marker coordinates with an identity `cutout_to_source_homography`, so they can be consumed by `ArucoMarkerAnnotationModule` directly.
+
+```python
+from src import OpticalFlowMarkerTrackingModule
+
+processor.create_queue('marker_frames')
+processor.create_queue('aruco_detections')
+processor.register_module(
+    OpticalFlowMarkerTrackingModule(
+        name='optical-flow-marker-tracker',
+        input_queue='marker_frames',
+        output_queue='aruco_detections',
+        max_forward_error=25.0,
+        max_backtrack_error=3.0,
+        min_marker_area=16.0,
+        debug=False,
+    )
+)
+```
+
 ### `ArucoDetectionModule`
 
-Detects OpenCV ArUco markers in enhanced BGR frames using a predefined dictionary. When markers are found, it outputs an `ArucoDetectionResult` containing the input image, marker ids, marker corners, and rejected candidates. Frames without markers are dropped.
+Detects OpenCV ArUco markers in rectified marker cutouts using a predefined dictionary. The detector runs once on the raw cutout and once with a white border so raw-only hits are preserved while tightly cropped cutouts still get a quiet margin. When markers are found, it outputs an `ArucoDetectionResult` containing the input image, marker ids, marker corners, and rejected candidates. Frames without markers are dropped.
 
 ```python
 from src import ArucoDetectionModule
 
-processor.create_queue('aruco_frames')
+processor.create_queue('marker_cutouts')
 processor.create_queue('aruco_detections')
 processor.register_module(
     ArucoDetectionModule(
         name='aruco-detector',
-        input_queue='aruco_frames',
+        input_queue='marker_cutouts',
         output_queue='aruco_detections',
-        dictionary_name='DICT_5X5_1000',
+        dictionary_name='DICT_6X6_1000',
+        input_border_pixels=16,
         debug=False,
     )
 )
@@ -146,8 +194,52 @@ With `debug=True`, the detector overwrites these files under `data/debug/`:
 
 ```text
 aruco_input.png
-aruco_detected_markers.png
+aruco_detected_markers.png  # union of raw and padded detections
 aruco_rejected_candidates.png
+```
+
+### `ArucoMarkerAnnotationModule`
+
+Draws detected marker ids onto the original source frame and overlays a compact marker-template grid in the lower-right corner when template images are available under `data/aruco/6x6_1000`. It expects detection metadata containing the source frame image and the cutout-to-source homography, which is provided by the rectifier/tracker path used by `main.py`.
+
+```python
+from src import ArucoMarkerAnnotationModule
+
+processor.create_queue('aruco_detections')
+processor.create_queue('annotated_frames')
+processor.register_module(
+    ArucoMarkerAnnotationModule(
+        name='aruco-marker-annotator',
+        input_queue='aruco_detections',
+        output_queue='annotated_frames',
+        debug=False,
+    )
+)
+```
+
+With `debug=True`, the annotator overwrites:
+
+```text
+data/debug/aruco_annotated_frame.png
+```
+
+### `FfmpegVideoWriterModule`
+
+Consumes BGR image frames and writes them to an MP4 using FFmpeg. The first frame fixes the output resolution; later frames must have the same shape. `main.py --output-video` wires this module to `annotated_frames` and closes it after the finite source is exhausted.
+
+```python
+from pathlib import Path
+from src import FfmpegVideoWriterModule
+
+processor.create_queue('annotated_frames')
+processor.register_module(
+    FfmpegVideoWriterModule(
+        name='ffmpeg-video-writer',
+        input_queue='annotated_frames',
+        output_path=Path('data/debug/aruco_annotated_video.mp4'),
+        fps=30.0,
+    )
+)
 ```
 
 ### `QueueFanoutModule`
@@ -187,13 +279,25 @@ processor.register_module(
 
 ### `LoopingVideoSource`
 
-Input source that reads frames from a video file and loops back to the first frame at EOF. It produces `VideoFrame` payloads.
+Input source that reads frames from a video file and loops back to the first frame at EOF. It produces `VideoFrame` payloads. Use `FiniteVideoSource` when processing a video once for export.
 
 ```python
 from src import LoopingVideoSource, ProcessorLoop
 
 source = LoopingVideoSource('data/1-input.mp4', realtime=True)
 runner = ProcessorLoop(processor, input_queue='frames', source=source)
+await runner.run_until_interrupted()
+```
+
+### `LoopingImageSource`
+
+Input source that reads one or more image files, expands glob patterns or numeric ranges such as `frame_[0006-0010].jpg`, and loops back to the first image after the set ends. It produces `ImageFrame` payloads. Use `FiniteImageSource` when processing an image set once for export.
+
+```python
+from src import LoopingImageSource, ProcessorLoop
+
+source = LoopingImageSource(["data/a.png", "data/b.jpg", "captures/*.jpeg", "frames/frame_[0006-0010].jpg"])
+runner = ProcessorLoop(processor, input_queue="frames", source=source)
 await runner.run_until_interrupted()
 ```
 
