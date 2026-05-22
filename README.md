@@ -9,7 +9,7 @@ For a quick single-frame debug/export run, use the included `test_frame.sh` help
 ./test_frame.sh path/to/frame.jpg
 ```
 
-It runs `main.py` through `uv` with `--output-video --debug`, uses `data/test_frame.jpg` by default, and writes the annotated MP4 plus debug images under `data/debug/`.
+The annotated-frame overlay uses generated marker template images. Run `uv run python generate_aruco_markers.py` before using this helper, or let `test_frame.sh` do it automatically when `data/aruco/6x6_1000` is missing. It then runs `main.py` through `uv` with `--output-video --debug`, uses `data/test_frame.jpg` by default, and writes the annotated MP4 plus debug images under `data/debug/`.
 
 ## Overview
 
