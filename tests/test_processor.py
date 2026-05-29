@@ -1180,9 +1180,7 @@ def test_marker_rectification_debug_enabled_writes_processing_images(
             assert debug_path.exists()
             assert cv2.imread(str(debug_path)) is not None
         assert cv2.imread(str(debug_dir / "marker_input.png")).shape == (360, 480, 3)
-        assert cv2.imread(
-            str(debug_dir / "marker_rectified_cutout_0000.png")
-        ).shape == (
+        assert cv2.imread(str(debug_dir / "marker_rectified_cutout_0000.png")).shape == (
             512,
             512,
             3,
@@ -2236,9 +2234,7 @@ def test_optical_flow_marker_tracker_predicts_next_frame_without_fallback() -> N
             dtype=np.float32,
         )
         assert np.allclose(
-            np.asarray(
-                rectifier.seen_metadata[1]["prior_source_quad"], dtype=np.float32
-            ),
+            np.asarray(rectifier.seen_metadata[1]["prior_source_quad"], dtype=np.float32),
             expected_quad,
         )
         assert "force_full_rectifier" not in rectifier.seen_metadata[1]
@@ -2394,9 +2390,7 @@ def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(
     asyncio.run(scenario())
 
 
-def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fails() -> (
-    None
-):
+def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fails() -> None:
     async def scenario() -> None:
         detection = aruco_detection(15, 35, 35, 22)
         rectifier = FakeTrackerRectifier()
@@ -2456,9 +2450,7 @@ def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fail
     asyncio.run(scenario())
 
 
-def test_optical_flow_marker_tracker_passes_prior_quad_to_fallback_after_failure() -> (
-    None
-):
+def test_optical_flow_marker_tracker_passes_prior_quad_to_fallback_after_failure() -> None:
     async def scenario() -> None:
         detection = aruco_detection(14, 35, 35, 22)
         rectifier = CapturingTrackerRectifier()
@@ -2557,9 +2549,7 @@ def test_optical_flow_marker_tracker_uses_support_points_when_exact_corners_fail
     assert confidence > 0.5
 
 
-def test_optical_flow_marker_tracker_forces_full_rectifier_on_low_quad_confidence() -> (
-    None
-):
+def test_optical_flow_marker_tracker_forces_full_rectifier_on_low_quad_confidence() -> None:
     async def scenario() -> None:
         detection = aruco_detection(20, 25, 45, 20)
         rectifier = CapturingTrackerRectifier()
