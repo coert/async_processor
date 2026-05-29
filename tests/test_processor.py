@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -13,7 +14,14 @@ import pytest
 
 import main as app_main
 
-from src.modules.marker_rectifier import refine_candidate
+from src.modules.marker_rectifier import (
+    Candidate,
+    apply_nms,
+    quad_iou,
+    compute_bw_dominance,
+    refine_candidate,
+)
+from src.modules.image_enhancer import ORIGINAL_FRAME_METADATA_KEY, apply_enhancement
 
 from src import (
     ArucoDetectionResult,
@@ -230,6 +238,7 @@ def test_unknown_route_target_is_surfaced_by_wait() -> None:
 
     asyncio.run(scenario())
 
+
 def test_loop_polls_source_and_submits_to_input_queue() -> None:
     async def scenario() -> None:
         processor = AsyncProcessor()
@@ -294,6 +303,7 @@ def test_loop_surfaces_module_failures_and_stops_cleanly() -> None:
 
     asyncio.run(scenario())
 
+
 @pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="SIGUSR1 is unavailable")
 def test_signal_stopper_sets_stop_event_from_signal() -> None:
     async def scenario() -> None:
@@ -303,38 +313,39 @@ def test_signal_stopper_sets_stop_event_from_signal() -> None:
 
     asyncio.run(scenario())
 
+
 def test_color_formatter_colors_expected_levels() -> None:
-    formatter = ColorFormatter('%(levelname)s:%(message)s', use_colors=True)
+    formatter = ColorFormatter("%(levelname)s:%(message)s", use_colors=True)
 
     for level in (logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR):
         record = logging.LogRecord(
-            name='test',
+            name="test",
             level=level,
             pathname=__file__,
             lineno=1,
-            msg='message',
+            msg="message",
             args=(),
             exc_info=None,
         )
         formatted = formatter.format(record)
-        assert '\033[' in formatted
+        assert "\033[" in formatted
         assert logging.getLevelName(level) in formatted
-        assert formatted.endswith('\033[0m:message')
+        assert formatted.endswith("\033[0m:message")
 
 
 def test_color_formatter_can_disable_colors() -> None:
-    formatter = ColorFormatter('%(levelname)s:%(message)s', use_colors=False)
+    formatter = ColorFormatter("%(levelname)s:%(message)s", use_colors=False)
     record = logging.LogRecord(
-        name='test',
+        name="test",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
-        msg='message',
+        msg="message",
         args=(),
         exc_info=None,
     )
 
-    assert formatter.format(record) == 'INFO:message'
+    assert formatter.format(record) == "INFO:message"
 
 
 def test_looping_video_source_reads_and_loops_test_video() -> None:
@@ -408,7 +419,9 @@ def test_looping_image_source_reads_single_image_and_loops(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-def test_looping_image_source_reads_multiple_images_in_input_order(tmp_path: Path) -> None:
+def test_looping_image_source_reads_multiple_images_in_input_order(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         first_path = tmp_path / "b.png"
         second_path = tmp_path / "a.png"
@@ -492,7 +505,9 @@ def test_looping_image_source_expands_unpadded_numeric_range(tmp_path: Path) -> 
     assert list(source.paths) == expected_paths
 
 
-def test_looping_image_source_uses_widest_numeric_range_endpoint_for_padding(tmp_path: Path) -> None:
+def test_looping_image_source_uses_widest_numeric_range_endpoint_for_padding(
+    tmp_path: Path,
+) -> None:
     expected_paths = [tmp_path / f"frame_{index:03d}.jpg" for index in range(6, 11)]
     for index, image_path in enumerate(expected_paths):
         write_test_source_image(image_path, (index, index + 1, index + 2))
@@ -502,7 +517,9 @@ def test_looping_image_source_uses_widest_numeric_range_endpoint_for_padding(tmp
     assert list(source.paths) == expected_paths
 
 
-def test_looping_image_source_skips_missing_files_in_numeric_range(tmp_path: Path) -> None:
+def test_looping_image_source_skips_missing_files_in_numeric_range(
+    tmp_path: Path,
+) -> None:
     expected_paths = [
         tmp_path / "frame_0006.jpg",
         tmp_path / "frame_0008.jpg",
@@ -516,7 +533,9 @@ def test_looping_image_source_skips_missing_files_in_numeric_range(tmp_path: Pat
     assert list(source.paths) == expected_paths
 
 
-def test_looping_image_source_skips_unreadable_files_in_numeric_range(tmp_path: Path) -> None:
+def test_looping_image_source_skips_unreadable_files_in_numeric_range(
+    tmp_path: Path,
+) -> None:
     first_path = tmp_path / "frame_0006.jpg"
     unreadable_path = tmp_path / "frame_0007.jpg"
     last_path = tmp_path / "frame_0008.jpg"
@@ -529,22 +548,32 @@ def test_looping_image_source_skips_unreadable_files_in_numeric_range(tmp_path: 
     assert list(source.paths) == [first_path, last_path]
 
 
-def test_looping_image_source_raises_when_numeric_range_has_no_readable_images(tmp_path: Path) -> None:
-    with pytest.raises(ImageSourceError, match="No readable image inputs matched numeric range"):
+def test_looping_image_source_raises_when_numeric_range_has_no_readable_images(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ImageSourceError, match="No readable image inputs matched numeric range"
+    ):
         LoopingImageSource(str(tmp_path / "frame_[0006-0010].jpg"))
 
 
-def test_looping_image_source_raises_for_descending_numeric_range(tmp_path: Path) -> None:
+def test_looping_image_source_raises_for_descending_numeric_range(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ImageSourceError, match="Numeric range cannot descend"):
         LoopingImageSource(str(tmp_path / "frame_[0010-0006].jpg"))
 
 
-def test_looping_image_source_raises_for_malformed_numeric_range(tmp_path: Path) -> None:
+def test_looping_image_source_raises_for_malformed_numeric_range(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ImageSourceError, match="exactly one numeric range"):
         LoopingImageSource(str(tmp_path / "frame_[0006-0010.jpg"))
 
 
-def test_looping_image_source_raises_for_numeric_range_with_unsupported_extension(tmp_path: Path) -> None:
+def test_looping_image_source_raises_for_numeric_range_with_unsupported_extension(
+    tmp_path: Path,
+) -> None:
     with pytest.raises(ImageSourceError, match="Unsupported image input extension"):
         LoopingImageSource(str(tmp_path / "frame_[0006-0010].txt"))
 
@@ -571,7 +600,9 @@ def test_looping_image_source_raises_for_unreadable_image(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_create_input_source_uses_video_source_for_single_video_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_input_source_uses_video_source_for_single_video_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyVideoSource:
@@ -587,7 +618,9 @@ def test_create_input_source_uses_video_source_for_single_video_path(monkeypatch
     assert captured == {"path": Path("input.mp4"), "realtime": False}
 
 
-def test_create_input_source_uses_image_source_for_single_image_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_input_source_uses_image_source_for_single_image_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyImageSource:
@@ -602,7 +635,9 @@ def test_create_input_source_uses_image_source_for_single_image_path(monkeypatch
     assert captured == {"paths": [Path("input.png")]}
 
 
-def test_create_input_source_treats_multiple_inputs_as_image_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_input_source_treats_multiple_inputs_as_image_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyImageSource:
@@ -611,13 +646,17 @@ def test_create_input_source_treats_multiple_inputs_as_image_set(monkeypatch: py
 
     monkeypatch.setattr(app_main, "LoopingImageSource", SpyImageSource)
 
-    source = app_main.create_input_source([Path("input.mp4"), Path("input.png")], realtime=True)
+    source = app_main.create_input_source(
+        [Path("input.mp4"), Path("input.png")], realtime=True
+    )
 
     assert isinstance(source, SpyImageSource)
     assert captured == {"paths": [Path("input.mp4"), Path("input.png")]}
 
 
-def test_frame_rate_logger_module_logs_processing_rate(caplog: pytest.LogCaptureFixture) -> None:
+def test_frame_rate_logger_module_logs_processing_rate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def scenario() -> None:
         module = FrameRateLoggerModule(
             name="fps",
@@ -686,7 +725,9 @@ def test_image_enhancement_module_preserves_video_frame_metadata() -> None:
             output_queue="enhanced_frames",
         )
 
-        routed = await module.process(Message(frame, metadata={"camera": "test"}), AsyncProcessor())
+        routed = await module.process(
+            Message(frame, metadata={"camera": "test"}), AsyncProcessor()
+        )
         enhanced_frame = routed.message.payload
 
         assert isinstance(enhanced_frame, VideoFrame)
@@ -818,7 +859,9 @@ def test_gmm_color_mask_module_preserves_video_frame_metadata(tmp_path: Path) ->
             model_path=model_path,
         )
 
-        routed = await module.process(Message(frame, metadata={"source": "test"}), AsyncProcessor())
+        routed = await module.process(
+            Message(frame, metadata={"source": "test"}), AsyncProcessor()
+        )
 
         assert routed.message.payload.shape == (12, 14)
         assert routed.message.metadata["source"] == "test"
@@ -855,11 +898,11 @@ def make_synthetic_marker_image() -> np.ndarray:
     return image
 
 
-def marker_debug_paths(debug_dir: Path) -> list[Path]:
+def marker_debug_paths(debug_dir: Path, frame_index: int = 0) -> list[Path]:
     return [
         debug_dir / "marker_input.png",
         debug_dir / "marker_hough_lines.png",
-        debug_dir / "marker_detected_quad.png",
+        debug_dir / f"marker_detected_quad_{frame_index:04}.png",
         debug_dir / "marker_rectified_cutout.png",
     ]
 
@@ -886,7 +929,56 @@ def test_marker_candidate_refinement_clips_initial_guess_to_bounds() -> None:
     assert np.all(refined[:, 1] <= 99)
 
 
-def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_path: Path) -> None:
+def test_marker_bw_dominance_prefers_black_and_white_quad() -> None:
+    quad = np.array([[16, 16], [112, 16], [112, 112], [16, 112]], dtype=np.float32)
+
+    bw_image = np.full((128, 128, 3), 255, dtype=np.uint8)
+    cv2.fillConvexPoly(bw_image, np.rint(quad).astype(np.int32), (20, 20, 20))
+
+    color_image = np.full((128, 128, 3), 255, dtype=np.uint8)
+    cv2.fillConvexPoly(color_image, np.rint(quad).astype(np.int32), (0, 0, 255))
+
+    bw_score = compute_bw_dominance(bw_image, quad)
+    color_score = compute_bw_dominance(color_image, quad)
+
+    assert bw_score > 0.95
+    assert color_score < 0.1
+
+
+def test_marker_nms_prefers_larger_overlapping_bw_quad() -> None:
+    large = Candidate(
+        quad=np.array([[10, 10], [110, 10], [110, 110], [10, 110]], dtype=np.float32),
+        source="contour",
+        variant_idx=0,
+        score=6.0,
+        bw_dominance=0.92,
+    )
+    small = Candidate(
+        quad=np.array([[28, 28], [92, 28], [92, 92], [28, 92]], dtype=np.float32),
+        source="contour",
+        variant_idx=0,
+        score=3.0,
+        bw_dominance=0.96,
+    )
+    distant = Candidate(
+        quad=np.array([[150, 20], [210, 20], [210, 80], [150, 80]], dtype=np.float32),
+        source="contour",
+        variant_idx=0,
+        score=5.0,
+        bw_dominance=0.88,
+    )
+
+    kept = apply_nms([small, large, distant], iou_threshold=0.3)
+
+    kept_ids = {id(candidate) for candidate in kept}
+    assert id(large) in kept_ids
+    assert id(distant) in kept_ids
+    assert id(small) not in kept_ids
+
+
+def test_marker_rectification_debug_disabled_does_not_create_debug_files(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         debug_dir = tmp_path / "debug"
         module = MarkerRectificationModule(
@@ -897,7 +989,9 @@ def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_pat
             debug_dir=debug_dir,
         )
 
-        routed = await module.process(Message(make_synthetic_marker_image()), AsyncProcessor())
+        routed = await module.process(
+            Message(make_synthetic_marker_image()), AsyncProcessor()
+        )
 
         assert routed is not None
         assert not debug_dir.exists()
@@ -905,7 +999,9 @@ def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_pat
     asyncio.run(scenario())
 
 
-def test_marker_rectification_debug_enabled_writes_processing_images(tmp_path: Path) -> None:
+def test_marker_rectification_debug_enabled_writes_processing_images(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         debug_dir = tmp_path / "debug"
         module = MarkerRectificationModule(
@@ -916,19 +1012,27 @@ def test_marker_rectification_debug_enabled_writes_processing_images(tmp_path: P
             debug_dir=debug_dir,
         )
 
-        routed = await module.process(Message(make_synthetic_marker_image()), AsyncProcessor())
+        routed = await module.process(
+            Message(make_synthetic_marker_image()), AsyncProcessor()
+        )
 
         assert routed is not None
         for debug_path in marker_debug_paths(debug_dir):
             assert debug_path.exists()
             assert cv2.imread(str(debug_path)) is not None
         assert cv2.imread(str(debug_dir / "marker_input.png")).shape == (360, 480, 3)
-        assert cv2.imread(str(debug_dir / "marker_rectified_cutout.png")).shape == (512, 512, 3)
+        assert cv2.imread(str(debug_dir / "marker_rectified_cutout.png")).shape == (
+            512,
+            512,
+            3,
+        )
 
     asyncio.run(scenario())
 
 
-def test_marker_rectification_debug_enabled_writes_failure_images(tmp_path: Path) -> None:
+def test_marker_rectification_debug_enabled_writes_failure_images(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         debug_dir = tmp_path / "debug"
         module = MarkerRectificationModule(
@@ -953,7 +1057,130 @@ def test_marker_rectification_debug_enabled_writes_failure_images(tmp_path: Path
     asyncio.run(scenario())
 
 
-def test_main_fans_out_enhanced_frames_when_gmm_model_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_marker_rectification_debug_detected_quad_uses_frame_index(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        debug_dir = tmp_path / "debug"
+        module = MarkerRectificationModule(
+            name="rectifier",
+            input_queue="frames",
+            output_queue="cutouts",
+            debug=True,
+            debug_dir=debug_dir,
+        )
+        frame = VideoFrame(
+            image=make_synthetic_marker_image(),
+            frame_index=12,
+            timestamp_seconds=0.48,
+            loop_count=0,
+        )
+
+        routed = await module.process(Message(frame), AsyncProcessor())
+
+        assert routed is not None
+        assert (debug_dir / "marker_detected_quad_0012.png").exists()
+        assert not (debug_dir / "marker_detected_quad_0000.png").exists()
+
+    asyncio.run(scenario())
+
+
+def test_marker_rectification_debug_detected_quad_increments_for_raw_arrays(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        debug_dir = tmp_path / "debug"
+        module = MarkerRectificationModule(
+            name="rectifier",
+            input_queue="frames",
+            output_queue="cutouts",
+            debug=True,
+            debug_dir=debug_dir,
+        )
+
+        routed0 = await module.process(
+            Message(make_synthetic_marker_image()), AsyncProcessor()
+        )
+        routed1 = await module.process(
+            Message(make_synthetic_marker_image()), AsyncProcessor()
+        )
+
+        assert routed0 is not None
+        assert routed1 is not None
+        assert (debug_dir / "marker_detected_quad_0000.png").exists()
+        assert (debug_dir / "marker_detected_quad_0001.png").exists()
+
+    asyncio.run(scenario())
+
+
+def test_marker_rectification_matches_video_1_frame_0_ground_truth() -> None:
+    async def scenario() -> None:
+        image = cv2.imread("data/aruco/video-1/frame_0001.jpg")
+        assert image is not None
+
+        with open("data/video-1-marker-gt.json", encoding="utf-8") as handle:
+            gt = np.asarray(json.load(handle)["frames"][0]["markers"], dtype=np.float32)
+
+        module = MarkerRectificationModule(
+            name="rectifier",
+            input_queue="frames",
+            output_queue="cutouts",
+        )
+        frame = VideoFrame(
+            image=image,
+            frame_index=0,
+            timestamp_seconds=0.0,
+            loop_count=0,
+        )
+
+        routed = await module.process(Message(frame), AsyncProcessor())
+
+        assert routed is not None
+        quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)
+        assert quad_iou(quad, gt) >= 0.85
+
+    asyncio.run(scenario())
+
+
+def test_marker_rectification_matches_ground_truth_with_enhanced_payload() -> None:
+    async def scenario() -> None:
+        with open("data/video-1-marker-gt.json", encoding="utf-8") as handle:
+            labeled_frames = json.load(handle)["frames"]
+
+        for labeled in labeled_frames:
+            frame_index = int(labeled["frame"])
+            original = cv2.imread(f"data/aruco/video-1/frame_{frame_index + 1:04d}.jpg")
+            assert original is not None
+            enhanced = apply_enhancement(original, "underwater")
+            gt = np.asarray(labeled["markers"], dtype=np.float32)
+
+            module = MarkerRectificationModule(
+                name="rectifier",
+                input_queue="frames",
+                output_queue="cutouts",
+            )
+            frame = VideoFrame(
+                image=enhanced,
+                frame_index=frame_index,
+                timestamp_seconds=0.0,
+                loop_count=0,
+            )
+
+            routed = await module.process(
+                Message(frame, metadata={ORIGINAL_FRAME_METADATA_KEY: original.copy()}),
+                AsyncProcessor(),
+            )
+
+            assert routed is not None
+            quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)
+            assert quad_iou(quad, gt) >= 0.85, frame_index
+
+    asyncio.run(scenario())
+
+
+def test_main_fans_out_enhanced_frames_when_gmm_model_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyOpticalFlowMarkerTrackingModule(BaseModule[np.ndarray]):
@@ -997,7 +1224,9 @@ def test_main_fans_out_enhanced_frames_when_gmm_model_missing(monkeypatch: pytes
             return None
 
     class SpyQueueFanoutModule(BaseModule[np.ndarray]):
-        def __init__(self, name: str, input_queue: str, output_queues: list[str]) -> None:
+        def __init__(
+            self, name: str, input_queue: str, output_queues: list[str]
+        ) -> None:
             super().__init__(name, input_queue)
             captured["fanout_input_queue"] = input_queue
             captured["fanout_output_queues"] = output_queues
@@ -1018,8 +1247,12 @@ def test_main_fans_out_enhanced_frames_when_gmm_model_missing(monkeypatch: pytes
 
     missing_model_path = tmp_path / "missing.joblib"
     monkeypatch.setattr(app_main, "GMM_MODEL_PATH", missing_model_path)
-    monkeypatch.setattr(app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule)
-    monkeypatch.setattr(app_main, "ArucoMarkerAnnotationModule", SpyArucoMarkerAnnotationModule)
+    monkeypatch.setattr(
+        app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule
+    )
+    monkeypatch.setattr(
+        app_main, "ArucoMarkerAnnotationModule", SpyArucoMarkerAnnotationModule
+    )
     monkeypatch.setattr(app_main, "QueueFanoutModule", SpyQueueFanoutModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
     args = app_main.parse_args(["--input-path", str(TEST_VIDEO_PATH)])
@@ -1032,10 +1265,15 @@ def test_main_fans_out_enhanced_frames_when_gmm_model_missing(monkeypatch: pytes
     assert captured["tracker_output_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["annotator_input_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["annotator_output_queue"] == app_main.ANNOTATED_FRAMES_QUEUE
-    assert captured["annotator_kwargs"] == {"debug": False, "debug_dir": Path("data/debug")}
+    assert captured["annotator_kwargs"] == {
+        "debug": False,
+        "debug_dir": Path("data/debug"),
+    }
 
 
-def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_main_registers_gmm_fanout_path_when_model_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyOpticalFlowMarkerTrackingModule(BaseModule[np.ndarray]):
@@ -1099,7 +1337,9 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
             return None
 
     class SpyQueueFanoutModule(BaseModule[np.ndarray]):
-        def __init__(self, name: str, input_queue: str, output_queues: list[str]) -> None:
+        def __init__(
+            self, name: str, input_queue: str, output_queues: list[str]
+        ) -> None:
             super().__init__(name, input_queue)
             captured["fanout_input_queue"] = input_queue
             captured["fanout_output_queues"] = output_queues
@@ -1121,9 +1361,13 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
     model_path = tmp_path / "color_classifier_gmm.joblib"
     model_path.write_bytes(b"exists")
     monkeypatch.setattr(app_main, "GMM_MODEL_PATH", model_path)
-    monkeypatch.setattr(app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule)
+    monkeypatch.setattr(
+        app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule
+    )
     monkeypatch.setattr(app_main, "GMMColorMaskModule", SpyGMMColorMaskModule)
-    monkeypatch.setattr(app_main, "ArucoMarkerAnnotationModule", SpyArucoMarkerAnnotationModule)
+    monkeypatch.setattr(
+        app_main, "ArucoMarkerAnnotationModule", SpyArucoMarkerAnnotationModule
+    )
     monkeypatch.setattr(app_main, "QueueFanoutModule", SpyQueueFanoutModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
     args = app_main.parse_args(["--input-path", str(TEST_VIDEO_PATH)])
@@ -1131,18 +1375,30 @@ def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.Mo
     asyncio.run(app_main.run_app(args))
 
     assert captured["fanout_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
-    assert captured["fanout_output_queues"] == [app_main.MARKER_FRAME_QUEUE, app_main.GMM_FRAME_QUEUE]
+    assert captured["fanout_output_queues"] == [
+        app_main.MARKER_FRAME_QUEUE,
+        app_main.GMM_FRAME_QUEUE,
+    ]
     assert captured["tracker_input_queue"] == app_main.MARKER_FRAME_QUEUE
     assert captured["tracker_output_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["annotator_input_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["annotator_output_queue"] == app_main.ANNOTATED_FRAMES_QUEUE
-    assert captured["annotator_kwargs"] == {"debug": False, "debug_dir": Path("data/debug")}
+    assert captured["annotator_kwargs"] == {
+        "debug": False,
+        "debug_dir": Path("data/debug"),
+    }
     assert captured["gmm_input_queue"] == app_main.GMM_FRAME_QUEUE
     assert captured["gmm_output_queue"] == app_main.COLOR_MASK_QUEUE
-    assert captured["gmm_kwargs"] == {"model_path": model_path, "debug": False, "debug_dir": Path("data/debug")}
+    assert captured["gmm_kwargs"] == {
+        "model_path": model_path,
+        "debug": False,
+        "debug_dir": Path("data/debug"),
+    }
 
 
-def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class SpyOpticalFlowMarkerTrackingModule(BaseModule[np.ndarray]):
@@ -1171,7 +1427,9 @@ def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(monkeypatch
         async def run_until_interrupted(self) -> None:
             return None
 
-    monkeypatch.setattr(app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule)
+    monkeypatch.setattr(
+        app_main, "OpticalFlowMarkerTrackingModule", SpyOpticalFlowMarkerTrackingModule
+    )
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
     args = app_main.parse_args(["--debug", "--input-path", str(TEST_VIDEO_PATH)])
 
@@ -1183,8 +1441,9 @@ def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(monkeypatch
     assert captured["debug_dir"] == Path("data/debug")
 
 
-
-def make_aruco_detection_result(detections: list[ArucoMarkerDetection]) -> ArucoDetectionResult:
+def make_aruco_detection_result(
+    detections: list[ArucoMarkerDetection],
+) -> ArucoDetectionResult:
     return ArucoDetectionResult(
         image=np.zeros((100, 100, 3), dtype=np.uint8),
         detections=detections,
@@ -1209,10 +1468,14 @@ def test_aruco_marker_annotation_module_maps_cutout_center_to_raw_frame() -> Non
         )
         captured: dict[str, object] = {}
 
-        def fake_draw_marker_id(image: np.ndarray, marker_id: int, center: np.ndarray) -> None:
+        def fake_draw_marker_id(
+            image: np.ndarray, marker_id: int, center: np.ndarray
+        ) -> None:
             captured["marker_id"] = marker_id
             captured["center"] = center.copy()
-            cv2.circle(image, tuple(np.rint(center).astype(np.int32)), 2, (255, 255, 255), -1)
+            cv2.circle(
+                image, tuple(np.rint(center).astype(np.int32)), 2, (255, 255, 255), -1
+            )
 
         module._draw_marker_id = fake_draw_marker_id  # type: ignore[method-assign]
         routed = await module.process(
@@ -1233,7 +1496,9 @@ def test_aruco_marker_annotation_module_maps_cutout_center_to_raw_frame() -> Non
         assert routed is not None
         assert routed.destination == "annotated"
         assert captured["marker_id"] == 42
-        assert np.allclose(captured["center"], np.array([110.0, 70.0], dtype=np.float32))
+        assert np.allclose(
+            captured["center"], np.array([110.0, 70.0], dtype=np.float32)
+        )
         assert np.any(routed.message.payload[68:73, 108:113] != 0)
 
     asyncio.run(scenario())
@@ -1246,11 +1511,15 @@ def test_aruco_marker_annotation_module_draws_on_copy_and_preserves_metadata() -
         detections = [
             ArucoMarkerDetection(
                 marker_id=7,
-                corners=np.array([[35, 35], [45, 35], [45, 45], [35, 45]], dtype=np.float32),
+                corners=np.array(
+                    [[35, 35], [45, 35], [45, 45], [35, 45]], dtype=np.float32
+                ),
             ),
             ArucoMarkerDetection(
                 marker_id=8,
-                corners=np.array([[75, 55], [85, 55], [85, 65], [75, 65]], dtype=np.float32),
+                corners=np.array(
+                    [[75, 55], [85, 55], [85, 65], [75, 65]], dtype=np.float32
+                ),
             ),
         ]
         module = ArucoMarkerAnnotationModule(
@@ -1290,7 +1559,9 @@ def test_aruco_marker_annotation_module_falls_back_to_rectifier_source_frame() -
         source = np.full((120, 120, 3), 20, dtype=np.uint8)
         detection = ArucoMarkerDetection(
             marker_id=5,
-            corners=np.array([[45, 45], [55, 45], [55, 55], [45, 55]], dtype=np.float32),
+            corners=np.array(
+                [[45, 45], [55, 45], [55, 55], [45, 55]], dtype=np.float32
+            ),
         )
         module = ArucoMarkerAnnotationModule(
             name="annotator",
@@ -1321,7 +1592,9 @@ def test_aruco_marker_annotation_module_writes_debug_image(tmp_path: Path) -> No
         raw = np.full((120, 120, 3), 30, dtype=np.uint8)
         detection = ArucoMarkerDetection(
             marker_id=9,
-            corners=np.array([[45, 45], [55, 45], [55, 55], [45, 55]], dtype=np.float32),
+            corners=np.array(
+                [[45, 45], [55, 45], [55, 55], [45, 55]], dtype=np.float32
+            ),
         )
         module = ArucoMarkerAnnotationModule(
             name="annotator",
@@ -1356,7 +1629,9 @@ def test_aruco_marker_annotation_module_writes_debug_image(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
-def aruco_detection(marker_id: int, x: float, y: float, size: float = 10.0) -> ArucoMarkerDetection:
+def aruco_detection(
+    marker_id: int, x: float, y: float, size: float = 10.0
+) -> ArucoMarkerDetection:
     return ArucoMarkerDetection(
         marker_id=marker_id,
         corners=np.array(
@@ -1383,7 +1658,9 @@ def write_marker_template(
     assert cv2.imwrite(str(template_dir / f"6x6_1000_{marker_id:04d}.png"), image)
 
 
-def test_aruco_marker_annotation_module_loads_marker_template_by_id(tmp_path: Path) -> None:
+def test_aruco_marker_annotation_module_loads_marker_template_by_id(
+    tmp_path: Path,
+) -> None:
     template_dir = tmp_path / "6x6_1000"
     write_marker_template(template_dir, 7, (10, 20, 30), size=8)
     module = ArucoMarkerAnnotationModule(
@@ -1400,7 +1677,9 @@ def test_aruco_marker_annotation_module_loads_marker_template_by_id(tmp_path: Pa
     assert np.array_equal(template[8, 8], np.array([10, 20, 30], dtype=np.uint8))
 
 
-def test_aruco_marker_annotation_module_infers_grid_from_shuffled_detections(tmp_path: Path) -> None:
+def test_aruco_marker_annotation_module_infers_grid_from_shuffled_detections(
+    tmp_path: Path,
+) -> None:
     module = ArucoMarkerAnnotationModule(
         name="annotator",
         input_queue="detections",
@@ -1421,7 +1700,9 @@ def test_aruco_marker_annotation_module_infers_grid_from_shuffled_detections(tmp
     assert grid == [[2, 1, 3], [4, 5, 6]]
 
 
-def test_aruco_marker_annotation_module_draws_template_grid_in_lower_right(tmp_path: Path) -> None:
+def test_aruco_marker_annotation_module_draws_template_grid_in_lower_right(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         template_dir = tmp_path / "6x6_1000"
         write_marker_template(template_dir, 1, (0, 255, 0))
@@ -1449,16 +1730,22 @@ def test_aruco_marker_annotation_module_draws_template_grid_in_lower_right(tmp_p
         assert routed is not None
         assert routed.message.metadata["template_grid_shape"] == (1, 1)
         grid_region = routed.message.payload[95:115, 135:155]
-        assert np.array_equal(grid_region[10, 10], np.array([0, 255, 0], dtype=np.uint8))
+        assert np.array_equal(
+            grid_region[10, 10], np.array([0, 255, 0], dtype=np.uint8)
+        )
 
     asyncio.run(scenario())
 
 
-def test_aruco_marker_annotation_module_shrinks_template_grid_to_fit_frame(tmp_path: Path) -> None:
+def test_aruco_marker_annotation_module_shrinks_template_grid_to_fit_frame(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         template_dir = tmp_path / "6x6_1000"
         for marker_id in range(1, 5):
-            write_marker_template(template_dir, marker_id, (marker_id, marker_id, marker_id))
+            write_marker_template(
+                template_dir, marker_id, (marker_id, marker_id, marker_id)
+            )
         raw = np.zeros((50, 50, 3), dtype=np.uint8)
         module = ArucoMarkerAnnotationModule(
             name="annotator",
@@ -1488,10 +1775,18 @@ def test_aruco_marker_annotation_module_shrinks_template_grid_to_fit_frame(tmp_p
 
         assert routed is not None
         assert routed.message.metadata["template_grid_shape"] == (2, 2)
-        assert np.array_equal(routed.message.payload[6, 6], np.array([1, 1, 1], dtype=np.uint8))
-        assert np.array_equal(routed.message.payload[6, 26], np.array([2, 2, 2], dtype=np.uint8))
-        assert np.array_equal(routed.message.payload[26, 6], np.array([3, 3, 3], dtype=np.uint8))
-        assert np.array_equal(routed.message.payload[26, 26], np.array([4, 4, 4], dtype=np.uint8))
+        assert np.array_equal(
+            routed.message.payload[6, 6], np.array([1, 1, 1], dtype=np.uint8)
+        )
+        assert np.array_equal(
+            routed.message.payload[6, 26], np.array([2, 2, 2], dtype=np.uint8)
+        )
+        assert np.array_equal(
+            routed.message.payload[26, 6], np.array([3, 3, 3], dtype=np.uint8)
+        )
+        assert np.array_equal(
+            routed.message.payload[26, 26], np.array([4, 4, 4], dtype=np.uint8)
+        )
 
     asyncio.run(scenario())
 
@@ -1513,13 +1808,17 @@ def test_aruco_marker_annotation_module_uses_placeholder_for_missing_template(
             template_margin_pixels=5,
         )
 
-        with caplog.at_level(logging.WARNING, logger="src.modules.aruco_marker_annotator"):
+        with caplog.at_level(
+            logging.WARNING, logger="src.modules.aruco_marker_annotator"
+        ):
             routed = await module.process(
                 Message(
                     make_aruco_detection_result([aruco_detection(999, 10, 10)]),
                     metadata={
                         "original_frame_image": raw,
-                        "cutout_to_source_homography": np.eye(3, dtype=np.float32).tolist(),
+                        "cutout_to_source_homography": np.eye(
+                            3, dtype=np.float32
+                        ).tolist(),
                     },
                 ),
                 AsyncProcessor(),
@@ -1544,13 +1843,22 @@ class FakeTrackerRectifier(BaseModule[np.ndarray]):
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray]:
         self.calls += 1
-        image = message.payload.image if isinstance(message.payload, (ImageFrame, VideoFrame)) else message.payload
+        image = (
+            message.payload.image
+            if isinstance(message.payload, (ImageFrame, VideoFrame))
+            else message.payload
+        )
         metadata = dict(message.metadata)
         metadata.update(
             {
                 "source_frame_image": image.copy(),
                 "source_quad": np.array(
-                    [[0, 0], [image.shape[1] - 1, 0], [image.shape[1] - 1, image.shape[0] - 1], [0, image.shape[0] - 1]],
+                    [
+                        [0, 0],
+                        [image.shape[1] - 1, 0],
+                        [image.shape[1] - 1, image.shape[0] - 1],
+                        [0, image.shape[0] - 1],
+                    ],
                     dtype=np.float32,
                 ).tolist(),
                 "cutout_to_source_homography": np.eye(3, dtype=np.float32).tolist(),
@@ -1579,7 +1887,9 @@ class FakeTrackerDetector(BaseModule[np.ndarray]):
                 "dictionary_name": "DICT_6X6_1000",
                 "marker_count": len(self.detections),
                 "marker_ids": [detection.marker_id for detection in self.detections],
-                "detection_passes": {detection.marker_id: "fake" for detection in self.detections},
+                "detection_passes": {
+                    detection.marker_id: "fake" for detection in self.detections
+                },
             }
         )
         return RoutedMessage(
@@ -1603,13 +1913,22 @@ def marker_corner_image(
     image = np.full(shape, 255, dtype=np.uint8)
     for detection in detections:
         for corner in np.rint(detection.corners).astype(np.int32):
-            cv2.circle(image, tuple(int(value) for value in corner), 4, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(
+                image,
+                tuple(int(value) for value in corner),
+                4,
+                (0, 0, 0),
+                -1,
+                cv2.LINE_AA,
+            )
     return image
 
 
 def translated_image(image: np.ndarray, dx: float, dy: float) -> np.ndarray:
     matrix = np.array([[1.0, 0.0, dx], [0.0, 1.0, dy]], dtype=np.float32)
-    return cv2.warpAffine(image, matrix, (image.shape[1], image.shape[0]), borderValue=(255, 255, 255))
+    return cv2.warpAffine(
+        image, matrix, (image.shape[1], image.shape[0]), borderValue=(255, 255, 255)
+    )
 
 
 def test_optical_flow_marker_tracker_fallback_seeds_state() -> None:
@@ -1625,7 +1944,9 @@ def test_optical_flow_marker_tracker_fallback_seeds_state() -> None:
             detector=detector,
         )
 
-        routed = await module.process(Message(marker_corner_image([detection])), AsyncProcessor())
+        routed = await module.process(
+            Message(marker_corner_image([detection])), AsyncProcessor()
+        )
 
         assert routed is not None
         assert routed.destination == "detections"
@@ -1663,15 +1984,19 @@ def test_optical_flow_marker_tracker_predicts_next_frame_without_fallback() -> N
         assert routed.message.metadata["detection_coordinate_space"] == "source_frame"
         assert routed.message.metadata["tracked_marker_count"] == 1
         expected = detection.corners + np.array([6, 4], dtype=np.float32)
-        assert np.allclose(routed.message.payload.detections[0].corners, expected, atol=1.5)
-        assert np.allclose(routed.message.metadata["cutout_to_source_homography"], np.eye(3), atol=1e-6)
+        assert np.allclose(
+            routed.message.payload.detections[0].corners, expected, atol=1.5
+        )
+        assert np.allclose(
+            routed.message.metadata["cutout_to_source_homography"], np.eye(3), atol=1e-6
+        )
 
     asyncio.run(scenario())
 
 
-
-
-def test_optical_flow_marker_tracker_writes_frame_indexed_prediction_debug_image(tmp_path: Path) -> None:
+def test_optical_flow_marker_tracker_writes_frame_indexed_prediction_debug_image(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         detection = aruco_detection(12, 35, 35, 22)
         rectifier = FakeTrackerRectifier()
@@ -1705,8 +2030,10 @@ def test_optical_flow_marker_tracker_writes_frame_indexed_prediction_debug_image
         assert routed.message.metadata["tracking_source"] == "optical_flow"
         fallback_path = tmp_path / "optical_flow_corners_frame_000005.png"
         prediction_path = tmp_path / "optical_flow_corners_frame_000006.png"
+        tracked_quad_path = tmp_path / "marker_detected_quad_0006.png"
         assert fallback_path.exists()
         assert prediction_path.exists()
+        assert tracked_quad_path.exists()
         fallback_image = cv2.imread(str(fallback_path))
         assert fallback_image is not None
         assert fallback_image.shape == first.shape
@@ -1715,11 +2042,17 @@ def test_optical_flow_marker_tracker_writes_frame_indexed_prediction_debug_image
         assert debug_image is not None
         assert debug_image.shape == second.shape
         assert not np.array_equal(debug_image, second)
+        tracked_quad_image = cv2.imread(str(tracked_quad_path))
+        assert tracked_quad_image is not None
+        assert tracked_quad_image.shape == second.shape
+        assert not np.array_equal(tracked_quad_image, second)
 
     asyncio.run(scenario())
 
 
-def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(tmp_path: Path) -> None:
+def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         detection = aruco_detection(13, 35, 35, 22)
         rectifier = FakeTrackerRectifier()
@@ -1737,7 +2070,9 @@ def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(tmp_pa
         second = np.full(first.shape, 255, dtype=np.uint8)
 
         await module.process(
-            Message(VideoFrame(first, frame_index=5, timestamp_seconds=0.2, loop_count=0)),
+            Message(
+                VideoFrame(first, frame_index=5, timestamp_seconds=0.2, loop_count=0)
+            ),
             AsyncProcessor(),
         )
 
@@ -1757,7 +2092,9 @@ def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(tmp_pa
 
         module._track_quad_result = fail_track_quad_result  # type: ignore[method-assign]
         routed = await module.process(
-            Message(VideoFrame(second, frame_index=6, timestamp_seconds=0.24, loop_count=0)),
+            Message(
+                VideoFrame(second, frame_index=6, timestamp_seconds=0.24, loop_count=0)
+            ),
             AsyncProcessor(),
         )
 
@@ -1773,6 +2110,7 @@ def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(tmp_pa
         assert detector.calls == 2
 
     asyncio.run(scenario())
+
 
 def test_optical_flow_marker_tracker_uses_support_points_when_exact_corners_fail(
     monkeypatch: pytest.MonkeyPatch,
@@ -1816,6 +2154,7 @@ def test_optical_flow_marker_tracker_uses_support_points_when_exact_corners_fail
     assert np.allclose(tracked, corners + delta, atol=0.25)
     assert confidence > 0.5
 
+
 def test_optical_flow_marker_tracker_drops_only_markers_that_leave_frame() -> None:
     async def scenario() -> None:
         visible = aruco_detection(20, 25, 45, 20)
@@ -1854,14 +2193,18 @@ def test_optical_flow_marker_tracker_drops_only_markers_that_leave_frame() -> No
         ) -> FakeTrackResult:
             if float(np.mean(points[:, 0])) > 100.0:
                 return FakeTrackResult(None, None, "out_of_frame")
-            return FakeTrackResult(points + np.array([12, 0], dtype=np.float32), 0.9, "tracked")
+            return FakeTrackResult(
+                points + np.array([12, 0], dtype=np.float32), 0.9, "tracked"
+            )
 
         module._track_quad_result = fake_track_quad_result  # type: ignore[method-assign]
         routed = await module.process(Message(second), AsyncProcessor())
 
         assert routed is not None
         assert routed.message.metadata["tracking_source"] == "optical_flow"
-        assert [detection.marker_id for detection in routed.message.payload.detections] == [20]
+        assert [
+            detection.marker_id for detection in routed.message.payload.detections
+        ] == [20]
         assert rectifier.calls == 1
         assert detector.calls == 1
 
@@ -1881,8 +2224,12 @@ def test_optical_flow_marker_tracker_reruns_detector_when_tracking_fails() -> No
             detector=detector,
         )
 
-        await module.process(Message(marker_corner_image([detection])), AsyncProcessor())
-        routed = await module.process(Message(np.full((140, 180, 3), 255, dtype=np.uint8)), AsyncProcessor())
+        await module.process(
+            Message(marker_corner_image([detection])), AsyncProcessor()
+        )
+        routed = await module.process(
+            Message(np.full((140, 180, 3), 255, dtype=np.uint8)), AsyncProcessor()
+        )
 
         assert routed is not None
         assert routed.message.metadata["tracking_source"] == "detector"
@@ -1919,6 +2266,7 @@ def test_optical_flow_marker_tracker_fallback_output_is_annotator_compatible() -
 
     asyncio.run(scenario())
 
+
 def test_marker_rectification_module_outputs_rectified_cutout() -> None:
     async def scenario() -> None:
         module = MarkerRectificationModule(
@@ -1927,7 +2275,9 @@ def test_marker_rectification_module_outputs_rectified_cutout() -> None:
             output_queue="cutouts",
         )
 
-        routed = await module.process(Message(make_synthetic_marker_image()), AsyncProcessor())
+        routed = await module.process(
+            Message(make_synthetic_marker_image()), AsyncProcessor()
+        )
 
         assert routed is not None
         assert routed.destination == "cutouts"
@@ -1938,9 +2288,15 @@ def test_marker_rectification_module_outputs_rectified_cutout() -> None:
         assert "score" in routed.message.metadata
         assert routed.message.metadata["input_shape"] == (360, 480, 3)
         assert routed.message.metadata["cutout_size"] == 512
-        assert np.asarray(routed.message.metadata["source_to_cutout_homography"]).shape == (3, 3)
-        assert np.asarray(routed.message.metadata["cutout_to_source_homography"]).shape == (3, 3)
-        assert np.array_equal(routed.message.metadata["source_frame_image"], make_synthetic_marker_image())
+        assert np.asarray(
+            routed.message.metadata["source_to_cutout_homography"]
+        ).shape == (3, 3)
+        assert np.asarray(
+            routed.message.metadata["cutout_to_source_homography"]
+        ).shape == (3, 3)
+        assert np.array_equal(
+            routed.message.metadata["source_frame_image"], make_synthetic_marker_image()
+        )
 
     asyncio.run(scenario())
 
@@ -1959,7 +2315,9 @@ def test_marker_rectification_module_preserves_video_frame_metadata() -> None:
             output_queue="cutouts",
         )
 
-        routed = await module.process(Message(frame, metadata={"source": "test"}), AsyncProcessor())
+        routed = await module.process(
+            Message(frame, metadata={"source": "test"}), AsyncProcessor()
+        )
 
         assert routed is not None
         assert routed.message.payload.shape == (512, 512, 3)
@@ -2030,7 +2388,9 @@ def test_frame_rate_logger_module_uses_loop_count_metadata_for_cutouts(
         cutout = np.zeros((32, 32, 3), dtype=np.uint8)
 
         with caplog.at_level(logging.INFO, logger="src.modules.frame_rate_logger"):
-            await module.process(Message(cutout, metadata={"loop_count": 7}), AsyncProcessor())
+            await module.process(
+                Message(cutout, metadata={"loop_count": 7}), AsyncProcessor()
+            )
 
         assert "Processing frame rate" in caplog.text
         assert "source loop 7" in caplog.text
@@ -2087,7 +2447,9 @@ class FakeFfmpeg:
         return FakeFfmpegStream(self.capture, self.process)
 
 
-def test_ffmpeg_video_writer_streams_rgb_frames_with_expected_encoding_options(tmp_path: Path) -> None:
+def test_ffmpeg_video_writer_streams_rgb_frames_with_expected_encoding_options(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
         fake_ffmpeg = FakeFfmpeg()
         module = FfmpegVideoWriterModule(
@@ -2185,7 +2547,9 @@ def test_output_video_mode_uses_source_video_fps_and_skips_interrupted_loop(
             captured["writer_output_path"] = output_path
             captured["writer_fps"] = fps
 
-        async def process(self, message: Message[np.ndarray], context: ModuleContext) -> None:
+        async def process(
+            self, message: Message[np.ndarray], context: ModuleContext
+        ) -> None:
             return None
 
     class ForbiddenProcessorLoop:
@@ -2248,7 +2612,9 @@ def test_output_video_mode_uses_default_fps_for_image_sets(
             super().__init__(name, input_queue)
             captured["writer_fps"] = fps
 
-        async def process(self, message: Message[np.ndarray], context: ModuleContext) -> None:
+        async def process(
+            self, message: Message[np.ndarray], context: ModuleContext
+        ) -> None:
             return None
 
     async def fake_run_finite_export(

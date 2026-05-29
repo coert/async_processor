@@ -11,7 +11,11 @@ import numpy as np
 from ..image import ImageFrame
 from ..messages import Message, RoutedMessage
 from ..video import VideoFrame
-from .aruco_detector import ArucoDetectionModule, ArucoDetectionResult, ArucoMarkerDetection
+from .aruco_detector import (
+    ArucoDetectionModule,
+    ArucoDetectionResult,
+    ArucoMarkerDetection,
+)
 from .base import BaseModule, ModuleContext
 from .image_enhancer import validate_color_image
 from .marker_rectifier import MarkerRectificationModule, polygon_area
@@ -106,7 +110,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         context: ModuleContext,
     ) -> RoutedMessage[ArucoDetectionResult] | None:
         payload = message.payload
-        image = payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        image = (
+            payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        )
         validate_color_image(image)
 
         gray = self._gray(image)
@@ -130,7 +136,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         tracked_markers: list[_TrackedMarker] = []
         marker_confidences: list[float] = []
         for detection in state.detections:
-            result = self._track_quad_result(state.gray, gray, detection.corners, image.shape)
+            result = self._track_quad_result(
+                state.gray, gray, detection.corners, image.shape
+            )
             marker_debug.append(
                 _MarkerTrackDebug(
                     marker_id=detection.marker_id,
@@ -138,23 +146,39 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
                     result=result,
                 )
             )
-            if not result.succeeded or result.corners is None or result.confidence is None:
+            if (
+                not result.succeeded
+                or result.corners is None
+                or result.confidence is None
+            ):
                 continue
             tracked_markers.append(_TrackedMarker(detection.marker_id, result.corners))
             marker_confidences.append(result.confidence)
 
         quad_result: _QuadTrackResult | None = None
         if state.quad is not None:
-            quad_result = self._track_quad_result(state.gray, gray, state.quad, image.shape)
-        tracked_quad = quad_result.corners if quad_result is not None and quad_result.succeeded else None
-        quad_confidence = quad_result.confidence if quad_result is not None and quad_result.succeeded else None
+            quad_result = self._track_quad_result(
+                state.gray, gray, state.quad, image.shape
+            )
+        tracked_quad = (
+            quad_result.corners
+            if quad_result is not None and quad_result.succeeded
+            else None
+        )
+        quad_confidence = (
+            quad_result.confidence
+            if quad_result is not None and quad_result.succeeded
+            else None
+        )
 
         metadata = self._base_metadata(message, image)
         if not tracked_markers:
             metadata.update(
                 {
                     "tracking_source": "optical_flow_failed",
-                    "tracking_failure_reason": self._tracking_failure_summary(marker_debug, quad_result),
+                    "tracking_failure_reason": self._tracking_failure_summary(
+                        marker_debug, quad_result
+                    ),
                     "tracked_marker_count": 0,
                     "attempted_marker_count": len(marker_debug),
                 }
@@ -193,7 +217,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
                 "dictionary_name": state.dictionary_name,
                 "marker_count": len(detections),
                 "marker_ids": marker_ids,
-                "detection_passes": {marker_id: "optical_flow" for marker_id in marker_ids},
+                "detection_passes": {
+                    marker_id: "optical_flow" for marker_id in marker_ids
+                },
                 "cutout_to_source_homography": np.eye(3, dtype=np.float32).tolist(),
                 "source_frame_image": image.copy(),
             }
@@ -254,7 +280,12 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         metadata["tracking_source"] = "detector"
         metadata.setdefault("detection_coordinate_space", "cutout")
         seeded_markers = self._seed_state(gray, detected.message.payload, metadata)
-        self._write_detector_debug_image(image, seeded_markers, self._state.quad if self._state is not None else None, metadata)
+        self._write_detector_debug_image(
+            image,
+            seeded_markers,
+            self._state.quad if self._state is not None else None,
+            metadata,
+        )
 
         return RoutedMessage(
             destination=self.output_queue,
@@ -269,6 +300,43 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             frame_text = f"{int(frame_index):06d}"
         return self.debug_dir / f"optical_flow_corners_frame_{frame_text}.png"
 
+    def _marker_detected_quad_debug_path(self, metadata: dict[str, Any]) -> Path:
+        frame_index = metadata.get("frame_index")
+        if frame_index is None:
+            frame_text = "unknown"
+        else:
+            frame_text = f"{int(frame_index):04d}"
+        return self.debug_dir / f"marker_detected_quad_{frame_text}.png"
+
+    def _write_marker_detected_quad_debug_image(
+        self,
+        image: np.ndarray,
+        quad: np.ndarray | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        if not self.debug:
+            return
+
+        canvas = image.copy()
+        if quad is None:
+            cv2.putText(
+                canvas,
+                "NO MARKER DETECTED",
+                (24, 48),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 0, 255),
+                3,
+                cv2.LINE_AA,
+            )
+        else:
+            self._draw_quad(canvas, quad, (0, 255, 0), label="quad")
+
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        path = self._marker_detected_quad_debug_path(metadata)
+        if not cv2.imwrite(str(path), canvas):
+            logger.warning("Failed to write tracked-quad debug image: %s", path)
+
     def _write_optical_flow_debug_image(
         self,
         image: np.ndarray,
@@ -281,10 +349,16 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             return
 
         canvas = image.copy()
-        self._draw_optical_flow_debug_summary(canvas, marker_debug, quad_result, metadata)
+        self._draw_optical_flow_debug_summary(
+            canvas, marker_debug, quad_result, metadata
+        )
 
         if previous_quad is not None:
-            if quad_result is not None and quad_result.succeeded and quad_result.corners is not None:
+            if (
+                quad_result is not None
+                and quad_result.succeeded
+                and quad_result.corners is not None
+            ):
                 self._draw_quad(canvas, quad_result.corners, (255, 0, 0), label="quad")
             else:
                 reason = "missing" if quad_result is None else quad_result.reason
@@ -309,7 +383,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
 
         for item in marker_debug:
             if item.result.succeeded and item.result.corners is not None:
-                self._draw_quad(canvas, item.result.corners, (0, 255, 0), label=str(item.marker_id))
+                self._draw_quad(
+                    canvas, item.result.corners, (0, 255, 0), label=str(item.marker_id)
+                )
                 continue
             failed_label = f"{item.marker_id} failed:{item.result.reason}"
             self._draw_quad(
@@ -331,6 +407,13 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         path = self._optical_flow_debug_path(metadata)
         if not cv2.imwrite(str(path), canvas):
             logger.warning("Failed to write optical-flow debug image: %s", path)
+
+        debug_quad = None
+        if quad_result is not None and quad_result.corners is not None:
+            debug_quad = quad_result.corners
+        elif previous_quad is not None:
+            debug_quad = previous_quad
+        self._write_marker_detected_quad_debug_image(image, debug_quad, metadata)
 
     def _write_detector_debug_image(
         self,
@@ -358,7 +441,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
                 cv2.LINE_AA,
             )
         for marker in seeded_markers:
-            self._draw_quad(canvas, marker.corners, (0, 255, 255), label=str(marker.marker_id))
+            self._draw_quad(
+                canvas, marker.corners, (0, 255, 255), label=str(marker.marker_id)
+            )
 
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         path = self._optical_flow_debug_path(metadata)
@@ -383,8 +468,26 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             lines.append(f"rectifier score {float(score):.3f}")
         y = 30
         for line in lines:
-            cv2.putText(image, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 4, cv2.LINE_AA)
-            cv2.putText(image, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.putText(
+                image,
+                line,
+                (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                4,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                image,
+                line,
+                (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 0, 0),
+                2,
+                cv2.LINE_AA,
+            )
             y += 28
 
     @staticmethod
@@ -410,21 +513,47 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         attempted_count = len(marker_debug)
         tracking_source = metadata.get("tracking_source", "optical_flow")
         confidence = metadata.get("tracking_confidence")
-        confidence_text = "" if confidence is None else f" confidence {float(confidence):.3f}"
+        confidence_text = (
+            "" if confidence is None else f" confidence {float(confidence):.3f}"
+        )
         quad_text = "quad n/a"
         if quad_result is not None:
-            quad_text = "quad ok" if quad_result.succeeded else f"quad failed:{quad_result.reason}"
+            quad_text = (
+                "quad ok"
+                if quad_result.succeeded
+                else f"quad failed:{quad_result.reason}"
+            )
         lines = [
             f"{tracking_source}: markers {tracked_count}/{attempted_count}{confidence_text}",
             quad_text,
         ]
         if tracking_source == "optical_flow_failed":
-            lines.append(f"fallback reason: {metadata.get('tracking_failure_reason', 'unknown')}")
+            lines.append(
+                f"fallback reason: {metadata.get('tracking_failure_reason', 'unknown')}"
+            )
 
         y = 30
         for line in lines:
-            cv2.putText(image, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 4, cv2.LINE_AA)
-            cv2.putText(image, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.putText(
+                image,
+                line,
+                (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                4,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                image,
+                line,
+                (16, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 0, 0),
+                2,
+                cv2.LINE_AA,
+            )
             y += 28
 
     @staticmethod
@@ -436,12 +565,16 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         label: str,
         dashed: bool = False,
     ) -> None:
-        points = np.rint(np.asarray(quad, dtype=np.float32).reshape(4, 2)).astype(np.int32)
+        points = np.rint(np.asarray(quad, dtype=np.float32).reshape(4, 2)).astype(
+            np.int32
+        )
         for idx in range(4):
             p0 = points[idx]
             p1 = points[(idx + 1) % 4]
             if dashed:
-                OpticalFlowMarkerTrackingModule._draw_dashed_line(image, p0, p1, color, 2)
+                OpticalFlowMarkerTrackingModule._draw_dashed_line(
+                    image, p0, p1, color, 2
+                )
             else:
                 cv2.line(image, tuple(p0), tuple(p1), color, 2, cv2.LINE_AA)
         for idx, point in enumerate(points):
@@ -450,15 +583,21 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             cv2.putText(
                 image,
                 str(idx),
-                tuple(int(value) for value in point + np.array([6, -6], dtype=np.int32)),
+                tuple(
+                    int(value) for value in point + np.array([6, -6], dtype=np.int32)
+                ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
             )
-        origin = tuple(int(value) for value in points[0] + np.array([8, 18], dtype=np.int32))
-        cv2.putText(image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        origin = tuple(
+            int(value) for value in points[0] + np.array([8, 18], dtype=np.int32)
+        )
+        cv2.putText(
+            image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA
+        )
 
     @staticmethod
     def _draw_dashed_line(
@@ -478,7 +617,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         distance = 0.0
         while distance < length:
             start = p0.astype(np.float32) + direction * distance
-            end = p0.astype(np.float32) + direction * min(distance + dash_length, length)
+            end = p0.astype(np.float32) + direction * min(
+                distance + dash_length, length
+            )
             cv2.line(
                 image,
                 tuple(np.rint(start).astype(np.int32)),
@@ -621,13 +762,22 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
 
         valid_errors = errors.reshape(-1)[valid]
         valid_backtrack_errors = backtrack_errors[valid]
-        valid_ratio = float(np.count_nonzero(valid)) / max(float(len(support_points)), 1.0)
-        forward_confidence = 1.0 - min(float(np.mean(valid_errors)), self.max_forward_error) / max(self.max_forward_error, 1e-6)
-        backtrack_confidence = 1.0 - min(float(np.mean(valid_backtrack_errors)), self.max_backtrack_error) / max(
+        valid_ratio = float(np.count_nonzero(valid)) / max(
+            float(len(support_points)), 1.0
+        )
+        forward_confidence = 1.0 - min(
+            float(np.mean(valid_errors)), self.max_forward_error
+        ) / max(self.max_forward_error, 1e-6)
+        backtrack_confidence = 1.0 - min(
+            float(np.mean(valid_backtrack_errors)), self.max_backtrack_error
+        ) / max(
             self.max_backtrack_error,
             1e-6,
         )
-        confidence = max(0.0, min(1.0, valid_ratio * (forward_confidence + backtrack_confidence) * 0.5))
+        confidence = max(
+            0.0,
+            min(1.0, valid_ratio * (forward_confidence + backtrack_confidence) * 0.5),
+        )
         return _QuadTrackResult(tracked.astype(np.float32), confidence, "tracked")
 
     @staticmethod
@@ -655,8 +805,14 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
                 cv2.RANSAC,
                 3.0,
             )
-            if homography is not None and inliers is not None and int(np.count_nonzero(inliers)) >= 4:
-                transformed = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), homography)
+            if (
+                homography is not None
+                and inliers is not None
+                and int(np.count_nonzero(inliers)) >= 4
+            ):
+                transformed = cv2.perspectiveTransform(
+                    corners.reshape(-1, 1, 2), homography
+                )
                 return transformed.reshape(4, 2).astype(np.float32)
 
         if len(previous_points) >= 3:
@@ -666,7 +822,9 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
                 method=cv2.RANSAC,
                 ransacReprojThreshold=3.0,
             )
-            if affine is not None and (inliers is None or int(np.count_nonzero(inliers)) >= 3):
+            if affine is not None and (
+                inliers is None or int(np.count_nonzero(inliers)) >= 3
+            ):
                 transformed = cv2.transform(corners.reshape(-1, 1, 2), affine)
                 return transformed.reshape(4, 2).astype(np.float32)
 
@@ -707,11 +865,16 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
     def _homography(metadata: dict[str, Any]) -> np.ndarray | None:
         raw_homography = metadata.get("cutout_to_source_homography")
         if raw_homography is None:
-            logger.warning("Cannot seed optical flow tracking without cutout-to-source homography")
+            logger.warning(
+                "Cannot seed optical flow tracking without cutout-to-source homography"
+            )
             return None
         homography = np.asarray(raw_homography, dtype=np.float32)
         if homography.shape != (3, 3):
-            logger.warning("Cannot seed optical flow tracking with invalid homography shape: %s", homography.shape)
+            logger.warning(
+                "Cannot seed optical flow tracking with invalid homography shape: %s",
+                homography.shape,
+            )
             return None
         return homography
 
