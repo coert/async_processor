@@ -91,7 +91,9 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         font_face = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.8
         fill_thickness = 2
-        origin = self._text_origin(text, center_xy, font_face, font_scale, fill_thickness)
+        origin = self._text_origin(
+            text, center_xy, font_face, font_scale, fill_thickness
+        )
         cv2.putText(
             image,
             text,
@@ -120,7 +122,11 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         if frame_index is None and timestamp_seconds is None:
             return None
         frame_text = "Frame ?" if frame_index is None else f"Frame {int(frame_index)}"
-        time_text = "?.???s" if timestamp_seconds is None else f"{float(timestamp_seconds):.3f}s"
+        time_text = (
+            "?.???s"
+            if timestamp_seconds is None
+            else f"{float(timestamp_seconds):.3f}s"
+        )
         return f"{frame_text} | {time_text}"
 
     def _draw_frame_info_box(self, image: np.ndarray, metadata: dict[str, Any]) -> None:
@@ -134,24 +140,33 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         padding_x = 10
         padding_y = 8
         margin = 12
+        vertical_offset = 100
         text_size, baseline = cv2.getTextSize(text, font_face, font_scale, thickness)
         box_width = text_size[0] + (2 * padding_x)
         box_height = text_size[1] + baseline + (2 * padding_y)
         x0 = margin
-        y0 = max(0, image.shape[0] - margin - box_height)
+        y0 = max(0, image.shape[0] - margin - box_height - vertical_offset)
         x1 = min(image.shape[1] - 1, x0 + box_width)
         y1 = min(image.shape[0] - 1, y0 + box_height)
         cv2.rectangle(image, (x0, y0), (x1, y1), (0, 0, 0), -1)
         cv2.rectangle(image, (x0, y0), (x1, y1), (255, 255, 255), 1)
         origin = (x0 + padding_x, y0 + padding_y + text_size[1])
-        cv2.putText(image, text, origin, font_face, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        cv2.putText(
+            image,
+            text,
+            origin,
+            font_face,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
 
     def _write_debug_image(self, image: np.ndarray, metadata: dict[str, Any]) -> None:
         if not self.debug:
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         debug_image = image.copy()
-        self._draw_frame_info_box(debug_image, metadata)
         path = self.debug_dir / "aruco_annotated_frame.png"
         if not cv2.imwrite(str(path), debug_image):
             logger.warning("Failed to write ArUco annotation debug image: %s", path)
@@ -161,7 +176,9 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         if image is None:
             image = metadata.get(SOURCE_FRAME_METADATA_KEY)
         if image is None:
-            logger.warning("Dropping ArUco annotation without source frame image metadata")
+            logger.warning(
+                "Dropping ArUco annotation without source frame image metadata"
+            )
             return None
         if not isinstance(image, np.ndarray):
             logger.warning("Dropping ArUco annotation with non-image source metadata")
@@ -171,11 +188,16 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
     def _homography(self, metadata: dict[str, Any]) -> np.ndarray | None:
         raw_homography = metadata.get(CUTOUT_TO_SOURCE_HOMOGRAPHY_METADATA_KEY)
         if raw_homography is None:
-            logger.warning("Dropping ArUco annotation without cutout-to-source homography metadata")
+            logger.warning(
+                "Dropping ArUco annotation without cutout-to-source homography metadata"
+            )
             return None
         homography = np.asarray(raw_homography, dtype=np.float32)
         if homography.shape != (3, 3):
-            logger.warning("Dropping ArUco annotation with invalid homography shape: %s", homography.shape)
+            logger.warning(
+                "Dropping ArUco annotation with invalid homography shape: %s",
+                homography.shape,
+            )
             return None
         return homography
 
@@ -201,27 +223,31 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         for item in sorted(marker_items, key=lambda value: float(value["center"][1])):
             center_y = float(item["center"][1])
             for row in rows:
-                row_y = float(np.mean([float(existing["center"][1]) for existing in row]))
+                row_y = float(
+                    np.mean([float(existing["center"][1]) for existing in row])
+                )
                 if abs(center_y - row_y) <= row_tolerance:
                     row.append(item)
                     break
             else:
                 rows.append([item])
 
-        rows.sort(key=lambda row: float(np.mean([float(item["center"][1]) for item in row])))
+        rows.sort(
+            key=lambda row: float(np.mean([float(item["center"][1]) for item in row]))
+        )
         sorted_rows = [
-            sorted(row, key=lambda item: float(item["center"][0]))
-            for row in rows
+            sorted(row, key=lambda item: float(item["center"][0])) for row in rows
         ]
         max_columns = max(len(row) for row in sorted_rows)
         return [
-            [int(item["marker_id"]) for item in row]
-            + [None] * (max_columns - len(row))
+            [int(item["marker_id"]) for item in row] + [None] * (max_columns - len(row))
             for row in sorted_rows
         ]
 
     def _template_path(self, marker_id: int) -> Path:
-        return self.marker_template_dir / f"{MARKER_TEMPLATE_PREFIX}_{marker_id:04d}.png"
+        return (
+            self.marker_template_dir / f"{MARKER_TEMPLATE_PREFIX}_{marker_id:04d}.png"
+        )
 
     def _blank_template(self, cell_size: int) -> np.ndarray:
         return np.full((cell_size, cell_size, 3), 255, dtype=np.uint8)
@@ -233,7 +259,9 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
             logger.warning("Missing or unreadable ArUco marker template: %s", path)
             return self._blank_template(cell_size)
         if marker.shape[:2] != (cell_size, cell_size):
-            marker = cv2.resize(marker, (cell_size, cell_size), interpolation=cv2.INTER_NEAREST)
+            marker = cv2.resize(
+                marker, (cell_size, cell_size), interpolation=cv2.INTER_NEAREST
+            )
         return marker
 
     def _cell_size_for_frame(
@@ -296,7 +324,7 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         y0 = image.shape[0] - self.template_margin_pixels - grid_height
         if x0 < 0 or y0 < 0:
             return None
-        image[y0:y0 + grid_height, x0:x0 + grid_width] = grid_image
+        image[y0 : y0 + grid_height, x0 : x0 + grid_width] = grid_image
         return rows, columns
 
     async def process(
@@ -316,13 +344,18 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         template_grid_shape = None
         if result.detections:
             centers = np.asarray(
-                [self._marker_center(detection.corners) for detection in result.detections],
+                [
+                    self._marker_center(detection.corners)
+                    for detection in result.detections
+                ],
                 dtype=np.float32,
             )
             frame_centers = self._transform_points(centers, homography)
             for detection, center in zip(result.detections, frame_centers):
                 self._draw_marker_id(annotated, detection.marker_id, center)
             template_grid_shape = self._draw_template_grid(annotated, result.detections)
+
+        self._draw_frame_info_box(annotated, metadata)
 
         metadata.update(
             {

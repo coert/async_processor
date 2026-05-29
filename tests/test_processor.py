@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ from src import (
     SignalStopper,
     UnknownQueueError,
     VideoFrame,
+    configure_logging,
 )
 
 
@@ -349,6 +351,36 @@ def test_color_formatter_can_disable_colors() -> None:
     )
 
     assert formatter.format(record) == "INFO:message"
+
+
+def test_configure_logging_includes_logger_line_number() -> None:
+    stream = io.StringIO()
+    root_logger = logging.getLogger()
+    original_handlers = root_logger.handlers[:]
+    original_level = root_logger.level
+
+    try:
+        configure_logging(use_colors=False, stream=stream)
+        handler = root_logger.handlers[0]
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=123,
+            msg="message",
+            args=(),
+            exc_info=None,
+        )
+        record.created = 0
+        record.msecs = 0
+
+        formatted = handler.format(record)
+
+        assert formatted[8:] == " INFO               [test:123] message"
+    finally:
+        root_logger.handlers.clear()
+        root_logger.handlers.extend(original_handlers)
+        root_logger.setLevel(original_level)
 
 
 def test_looping_video_source_reads_and_loops_test_video() -> None:
@@ -698,6 +730,31 @@ def test_frame_rate_logger_module_logs_processing_rate(
 
         assert "Processing frame rate" in caplog.text
         assert "FPS" in caplog.text
+
+    asyncio.run(scenario())
+
+
+def test_frame_rate_logger_module_logs_remaining_frames_on_close(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        module = FrameRateLoggerModule(
+            name="fps",
+            input_queue="frames",
+            log_interval_seconds=60,
+        )
+        frame = VideoFrame(
+            image=object(),
+            frame_index=0,
+            timestamp_seconds=0.0,
+            loop_count=0,
+        )
+
+        with caplog.at_level(logging.INFO, logger="src.modules.frame_rate_logger"):
+            await module.process(Message(frame), AsyncProcessor())
+            module.close()
+
+        assert caplog.text.count("Processing frame rate") == 1
 
     asyncio.run(scenario())
 
@@ -1638,6 +1695,37 @@ def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(
     assert captured["debug_dir"] == Path("data/debug")
 
 
+def test_main_configures_debug_logging_when_debug_flag_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_app(args: object) -> None:
+        captured["run_app_args"] = args
+
+    def fake_configure_logging(
+        level: str | int,
+        *,
+        use_colors: bool | None = None,
+        stream: object | None = None,
+    ) -> None:
+        captured["level"] = level
+        captured["use_colors"] = use_colors
+        captured["stream"] = stream
+
+    args = app_main.argparse.Namespace(log_level="INFO", no_color=False, debug=True)
+
+    monkeypatch.setattr(app_main, "parse_args", lambda: args)
+    monkeypatch.setattr(app_main, "configure_logging", fake_configure_logging)
+    monkeypatch.setattr(app_main, "run_app", fake_run_app)
+
+    app_main.main()
+
+    assert captured["level"] == "DEBUG"
+    assert captured["use_colors"] is True
+    assert captured["run_app_args"] is args
+
+
 def make_aruco_detection_result(
     detections: list[ArucoMarkerDetection],
 ) -> ArucoDetectionResult:
@@ -1786,7 +1874,7 @@ def test_aruco_marker_annotation_module_falls_back_to_rectifier_source_frame() -
 def test_aruco_marker_annotation_module_writes_debug_image(tmp_path: Path) -> None:
     async def scenario() -> None:
         debug_dir = tmp_path / "debug"
-        raw = np.full((120, 120, 3), 30, dtype=np.uint8)
+        raw = np.full((240, 120, 3), 30, dtype=np.uint8)
         detection = ArucoMarkerDetection(
             marker_id=9,
             corners=np.array(
@@ -1819,9 +1907,10 @@ def test_aruco_marker_annotation_module_writes_debug_image(tmp_path: Path) -> No
         assert path.exists()
         debug_image = cv2.imread(str(path))
         assert debug_image is not None
-        lower_left = debug_image[-44:-8, 8:40]
-        assert np.any(lower_left != raw[-44:-8, 8:40])
-        assert np.array_equal(routed.message.payload[-44:-8, 8:40], raw[-44:-8, 8:40])
+        overlay_band = debug_image[88:124, 8:40]
+        assert np.any(overlay_band != raw[88:124, 8:40])
+        assert np.any(routed.message.payload[88:124, 8:40] != raw[88:124, 8:40])
+        assert np.array_equal(debug_image[-44:-8, 8:40], raw[-44:-8, 8:40])
 
     asyncio.run(scenario())
 
@@ -2956,6 +3045,7 @@ def test_output_video_mode_uses_source_video_fps_and_skips_interrupted_loop(
     ) -> None:
         captured["export_source"] = source
         captured["export_input_paths"] = input_paths
+        captured["module_names"] = tuple(processor._modules)
 
     monkeypatch.setattr(app_main, "FiniteVideoSource", SpyFiniteVideoSource)
     monkeypatch.setattr(app_main, "FfmpegVideoWriterModule", SpyWriter)
@@ -2976,10 +3066,19 @@ def test_output_video_mode_uses_source_video_fps_and_skips_interrupted_loop(
 
     assert captured["source_path"] == TEST_VIDEO_PATH
     assert captured["source_realtime"] is False
-    assert captured["writer_input_queue"] == app_main.ANNOTATED_FRAMES_QUEUE
+    assert captured["writer_input_queue"] == app_main.EXPORT_VIDEO_QUEUE
     assert captured["writer_output_path"] == tmp_path / "out.mp4"
     assert captured["writer_fps"] == 12.5
     assert captured["export_input_paths"] == [TEST_VIDEO_PATH]
+    assert captured["module_names"] == (
+        "image-enhancer",
+        "enhanced-frame-fanout",
+        "optical-flow-marker-tracker",
+        "aruco-marker-annotator",
+        "annotated-frame-fanout",
+        "frame-rate-logger",
+        "ffmpeg-video-writer",
+    )
 
 
 def test_output_video_mode_uses_default_fps_for_image_sets(

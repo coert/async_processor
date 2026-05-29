@@ -42,6 +42,17 @@ class FrameRateLoggerModule(BaseModule[Any]):
         if elapsed < self.log_interval_seconds:
             return None
 
+        self._log_rate(now, message)
+        return None
+
+    def close(self) -> None:
+        if self._frames_since_log == 0:
+            return
+
+        self._log_rate(time.monotonic(), None)
+
+    def _log_rate(self, now: float, message: Message[Any] | None) -> None:
+        elapsed = now - self._last_log_at
         fps = self._frames_since_log / elapsed if elapsed > 0 else 0.0
         logger.info(
             "Processing frame rate: %.2f FPS (%s total item(s), source loop %s)",
@@ -51,9 +62,10 @@ class FrameRateLoggerModule(BaseModule[Any]):
         )
         self._frames_since_log = 0
         self._last_log_at = now
-        return None
 
-    def _loop_count(self, message: Message[Any]) -> int | str:
+    def _loop_count(self, message: Message[Any] | None) -> int | str:
+        if message is None:
+            return "unknown"
         if isinstance(message.payload, (ImageFrame, VideoFrame)):
             return message.payload.loop_count
         return message.metadata.get("loop_count", "unknown")

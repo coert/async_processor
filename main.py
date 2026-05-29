@@ -48,6 +48,8 @@ MARKER_FRAME_QUEUE = "marker_frames"
 COLOR_MASK_QUEUE = "color_masks"
 ARUCO_DETECTIONS_QUEUE = "aruco_detections"
 ANNOTATED_FRAMES_QUEUE = "annotated_frames"
+EXPORT_VIDEO_QUEUE = "export_video_frames"
+EXPORT_FPS_LOG_QUEUE = "export_fps_log_frames"
 
 
 def is_video_input(path: Path) -> bool:
@@ -185,7 +187,9 @@ def register_processing_modules(
             emit_empty_detections=emit_empty_detections,
         )
     )
-    logger.info("Optical-flow marker tracker enabled on input queue %s", MARKER_FRAME_QUEUE)
+    logger.info(
+        "Optical-flow marker tracker enabled on input queue %s", MARKER_FRAME_QUEUE
+    )
     processor.register_module(
         ArucoMarkerAnnotationModule(
             name="aruco-marker-annotator",
@@ -203,7 +207,10 @@ async def run_finite_export(
     *,
     input_paths: Sequence[Path],
 ) -> None:
-    logger.info("Exporting annotated video from %s", ", ".join(str(path) for path in input_paths))
+    logger.info(
+        "Exporting annotated video from %s",
+        ", ".join(str(path) for path in input_paths),
+    )
     await processor.start()
     try:
         while True:
@@ -257,10 +264,25 @@ async def run_app(args: argparse.Namespace) -> None:
             args.input_path,
             image_output_fps=args.output_fps,
         )
+        processor.create_queue(EXPORT_VIDEO_QUEUE, maxsize=args.queue_size)
+        processor.create_queue(EXPORT_FPS_LOG_QUEUE, maxsize=args.queue_size)
+        processor.register_module(
+            QueueFanoutModule(
+                name="annotated-frame-fanout",
+                input_queue=ANNOTATED_FRAMES_QUEUE,
+                output_queues=[EXPORT_VIDEO_QUEUE, EXPORT_FPS_LOG_QUEUE],
+            )
+        )
+        processor.register_module(
+            FrameRateLoggerModule(
+                name="frame-rate-logger",
+                input_queue=EXPORT_FPS_LOG_QUEUE,
+            )
+        )
         processor.register_module(
             FfmpegVideoWriterModule(
                 name="ffmpeg-video-writer",
-                input_queue=ANNOTATED_FRAMES_QUEUE,
+                input_queue=EXPORT_VIDEO_QUEUE,
                 output_path=args.output_video,
                 fps=output_fps,
             )
@@ -270,7 +292,10 @@ async def run_app(args: argparse.Namespace) -> None:
         return
 
     if not gmm_model_exists:
-        logger.info("GMM color classifier model not found at %s; module disabled", GMM_MODEL_PATH)
+        logger.info(
+            "GMM color classifier model not found at %s; module disabled",
+            GMM_MODEL_PATH,
+        )
     processor.register_module(
         FrameRateLoggerModule(
             name="frame-rate-logger",
@@ -286,14 +311,18 @@ async def run_app(args: argparse.Namespace) -> None:
         poll_interval=0,
     )
 
-    logger.info("Reading frames from %s. Press Ctrl+C to stop.", ", ".join(str(path) for path in args.input_path))
+    logger.info(
+        "Reading frames from %s. Press Ctrl+C to stop.",
+        ", ".join(str(path) for path in args.input_path),
+    )
     await runner.run_until_interrupted()
     logger.info("Async processor loop stopped cleanly.")
 
 
 def main() -> None:
     args = parse_args()
-    configure_logging(args.log_level, use_colors=not args.no_color)
+    log_level = "DEBUG" if args.debug else args.log_level
+    configure_logging(log_level, use_colors=not args.no_color)
     asyncio.run(run_app(args))
 
 

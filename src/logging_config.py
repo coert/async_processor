@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TextIO
+from collections.abc import Mapping
+from typing import Any, Literal, TextIO
 
 RESET = "\033[0m"
 LEVEL_COLORS = {
@@ -15,8 +16,23 @@ LEVEL_COLORS = {
 
 
 class ColorFormatter(logging.Formatter):
-    def __init__(self, *args: object, use_colors: bool = True, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        fmt: str | None = None,
+        datefmt: str | None = None,
+        style: Literal["%", "{", "$"] = "%",
+        validate: bool = True,
+        *,
+        defaults: Mapping[str, Any] | None = None,
+        use_colors: bool = True,
+    ) -> None:
+        super().__init__(
+            fmt=fmt,
+            datefmt=datefmt,
+            style=style,
+            validate=validate,
+            defaults=defaults,
+        )
         self.use_colors = use_colors
 
     def format(self, record: logging.LogRecord) -> str:
@@ -43,7 +59,7 @@ def configure_logging(
     handler = logging.StreamHandler(log_stream)
     handler.setFormatter(
         ColorFormatter(
-            fmt="%(asctime)s %(levelname)-18s [%(name)s] %(message)s",
+            fmt="%(asctime)s %(levelname)-18s [%(name)s:%(lineno)d] %(message)s",
             datefmt="%H:%M:%S",
             use_colors=color_enabled,
         )
