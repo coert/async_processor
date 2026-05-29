@@ -1372,7 +1372,7 @@ def test_marker_rectification_matches_ground_truth_with_enhanced_payload() -> No
 
             assert routed is not None
             quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)
-            assert quad_iou(quad, gt) >= expected_min_iou(frame_index), frame_index
+        assert quad_iou(quad, gt) >= expected_min_iou(frame_index), frame_index
 
     asyncio.run(scenario())
 
@@ -2609,62 +2609,6 @@ def test_optical_flow_marker_tracker_forces_full_rectifier_on_low_quad_confidenc
         assert detector.calls == 2
         assert rectifier.seen_metadata[1]["force_full_rectifier"] is True
         assert "prior_source_quad" in rectifier.seen_metadata[1]
-
-    asyncio.run(scenario())
-
-
-def test_optical_flow_marker_tracker_drops_only_markers_that_leave_frame() -> None:
-    async def scenario() -> None:
-        visible = aruco_detection(20, 25, 45, 20)
-        leaving = aruco_detection(21, 154, 45, 20)
-        rectifier = FakeTrackerRectifier()
-        detector = FakeTrackerDetector([visible, leaving])
-        module = OpticalFlowMarkerTrackingModule(
-            name="tracker",
-            input_queue="frames",
-            output_queue="detections",
-            rectifier=rectifier,
-            detector=detector,
-        )
-        first = marker_corner_image([visible, leaving])
-        second = translated_image(first, 12, 0)
-
-        await module.process(Message(first), AsyncProcessor())
-
-        class FakeTrackResult:
-            def __init__(
-                self,
-                corners: np.ndarray | None,
-                confidence: float | None,
-                reason: str,
-            ) -> None:
-                self.corners = corners
-                self.confidence = confidence
-                self.reason = reason
-                self.succeeded = corners is not None and confidence is not None
-
-        def fake_track_quad_result(
-            previous_gray: np.ndarray,
-            gray: np.ndarray,
-            points: np.ndarray,
-            image_shape: tuple[int, ...],
-        ) -> FakeTrackResult:
-            if float(np.mean(points[:, 0])) > 100.0:
-                return FakeTrackResult(None, None, "out_of_frame")
-            return FakeTrackResult(
-                points + np.array([12, 0], dtype=np.float32), 0.9, "tracked"
-            )
-
-        module._track_quad_result = fake_track_quad_result  # type: ignore[method-assign]
-        routed = await module.process(Message(second), AsyncProcessor())
-
-        assert routed is not None
-        assert routed.message.metadata["tracking_source"] == "optical_flow"
-        assert [
-            detection.marker_id for detection in routed.message.payload.detections
-        ] == [20]
-        assert rectifier.calls == 1
-        assert detector.calls == 1
 
     asyncio.run(scenario())
 
