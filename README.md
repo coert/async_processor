@@ -109,13 +109,13 @@ processor.register_module(
 )
 ```
 
-With `debug=True`, the rectifier overwrites these files under `data/debug/`:
+With `debug=True`, the rectifier overwrites the latest input/line views and writes per-frame quad and cutout images under `data/debug/`:
 
 ```text
 marker_input.png
 marker_hough_lines.png
-marker_detected_quad.png
-marker_rectified_cutout.png
+marker_detected_quad_####.png
+marker_rectified_cutout_####.png
 ```
 
 ### `GMMColorMaskModule`
@@ -149,7 +149,7 @@ data/debug/gmm_color_mask.png
 
 ### `OpticalFlowMarkerTrackingModule`
 
-Tracks previously detected ArUco marker corners frame-to-frame with pyramidal Lucas-Kanade optical flow. When tracking confidence is too low, or when no markers remain in frame, it refreshes state by running `MarkerRectificationModule` and `ArucoDetectionModule` internally. Optical-flow outputs use source-frame marker coordinates with an identity `cutout_to_source_homography`, so they can be consumed by `ArucoMarkerAnnotationModule` directly.
+Tracks the detected outer/source quad frame-to-frame with pyramidal Lucas-Kanade optical flow, then runs `MarkerRectificationModule` and `ArucoDetectionModule` on every frame using that tracked quad as a prior. When quad tracking fails or confidence drops too low, it forces the rectifier to re-run the full edge and Hough search on that same frame instead of trusting the propagated quad. The output remains detector-backed ArUco detections with the rectifier homography metadata needed by `ArucoMarkerAnnotationModule`.
 
 ```python
 from src import OpticalFlowMarkerTrackingModule
@@ -190,12 +190,12 @@ processor.register_module(
 )
 ```
 
-With `debug=True`, the detector overwrites these files under `data/debug/`:
+With `debug=True`, the detector overwrites the latest raw cutout input and writes per-frame overlay images under `data/debug/`:
 
 ```text
 aruco_input.png
-aruco_detected_markers.png  # union of raw and padded detections
-aruco_rejected_candidates.png
+aruco_detected_markers_####.png  # union of raw and padded detections on the padded input canvas
+aruco_rejected_candidates_####.png
 ```
 
 ### `ArucoMarkerAnnotationModule`

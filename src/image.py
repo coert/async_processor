@@ -44,6 +44,7 @@ class LoopingImageSource:
         self.paths = self._resolve_paths(paths)
         if not self.paths:
             raise ImageSourceError("No image inputs matched.")
+        self.frame_indices = self._frame_indices_for_paths(self.paths)
 
         self.frame_count = len(self.paths)
         self.loop_count = 0
@@ -59,7 +60,7 @@ class LoopingImageSource:
 
         frame = ImageFrame(
             image=image,
-            frame_index=self._index,
+            frame_index=self.frame_indices[self._index],
             timestamp_seconds=0.0,
             loop_count=self.loop_count,
             path=path,
@@ -77,7 +78,9 @@ class LoopingImageSource:
         return None
 
     @classmethod
-    def _resolve_paths(cls, paths: str | Path | Iterable[str | Path]) -> tuple[Path, ...]:
+    def _resolve_paths(
+        cls, paths: str | Path | Iterable[str | Path]
+    ) -> tuple[Path, ...]:
         if isinstance(paths, (str, Path)):
             raw_paths = [paths]
         else:
@@ -99,9 +102,13 @@ class LoopingImageSource:
 
         if unmatched_patterns:
             patterns = ", ".join(unmatched_patterns)
-            raise ImageSourceError(f"No image inputs matched glob pattern(s): {patterns}")
+            raise ImageSourceError(
+                f"No image inputs matched glob pattern(s): {patterns}"
+            )
 
-        image_paths = tuple(path for path in resolved if path.suffix.lower() in IMAGE_EXTENSIONS)
+        image_paths = tuple(
+            path for path in resolved if path.suffix.lower() in IMAGE_EXTENSIONS
+        )
         if len(image_paths) != len(resolved):
             unsupported = sorted(
                 str(path)
@@ -113,7 +120,21 @@ class LoopingImageSource:
             )
 
         return image_paths
-    
+
+    @staticmethod
+    def _frame_indices_for_paths(paths: tuple[Path, ...]) -> tuple[int, ...]:
+        return tuple(
+            LoopingImageSource._frame_index_from_path(path, fallback=index)
+            for index, path in enumerate(paths)
+        )
+
+    @staticmethod
+    def _frame_index_from_path(path: Path, fallback: int) -> int:
+        matches = re.findall(r"(\d+)", path.stem)
+        if not matches:
+            return fallback
+        return int(matches[-1])
+
     @classmethod
     def _contains_numeric_range_syntax(cls, path_text: str) -> bool:
         if NUMERIC_RANGE_PATTERN.search(path_text):
@@ -122,7 +143,7 @@ class LoopingImageSource:
             return True
         bracketed_parts = re.findall(r"\[[^\]]*\]", path_text)
         return any("-" in part for part in bracketed_parts)
-    
+
     @classmethod
     def _expand_numeric_range(cls, path_text: str) -> tuple[Path, ...]:
         matches = list(NUMERIC_RANGE_PATTERN.finditer(path_text))
@@ -146,15 +167,23 @@ class LoopingImageSource:
             else 0
         )
         expanded_paths = [
-            Path(f"{prefix}{value:0{width}d}{suffix}" if width else f"{prefix}{value}{suffix}")
+            Path(
+                f"{prefix}{value:0{width}d}{suffix}"
+                if width
+                else f"{prefix}{value}{suffix}"
+            )
             for value in range(start, end + 1)
         ]
         unsupported_paths = [
-            path for path in expanded_paths if path.suffix.lower() not in IMAGE_EXTENSIONS
+            path
+            for path in expanded_paths
+            if path.suffix.lower() not in IMAGE_EXTENSIONS
         ]
         if unsupported_paths:
             unsupported = ", ".join(str(path) for path in unsupported_paths)
-            raise ImageSourceError(f"Unsupported image input extension(s): {unsupported}")
+            raise ImageSourceError(
+                f"Unsupported image input extension(s): {unsupported}"
+            )
 
         image_paths = [
             path
@@ -174,6 +203,7 @@ class LoopingImageSource:
 
         return tuple(image_paths)
 
+
 class FiniteImageSource(LoopingImageSource):
     async def poll(self) -> ImageFrame | None:
         if self._index >= self.frame_count:
@@ -187,11 +217,10 @@ class FiniteImageSource(LoopingImageSource):
 
         frame = ImageFrame(
             image=image,
-            frame_index=self._index,
+            frame_index=self.frame_indices[self._index],
             timestamp_seconds=0.0,
             loop_count=0,
             path=path,
         )
         self._index += 1
         return frame
-

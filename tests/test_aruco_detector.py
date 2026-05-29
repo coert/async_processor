@@ -62,7 +62,9 @@ def test_aruco_detection_module_merges_raw_and_padded_detections(caplog) -> None
             input_border_pixels=16,
         )
 
-        def fake_detect(candidate: np.ndarray) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
+        def fake_detect(
+            candidate: np.ndarray,
+        ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
             if candidate.shape == image.shape:
                 return (
                     [np.array([[[1, 1], [5, 1], [5, 5], [1, 5]]], dtype=np.float32)],
@@ -71,8 +73,12 @@ def test_aruco_detection_module_merges_raw_and_padded_detections(caplog) -> None
                 )
             return (
                 [
-                    np.array([[[17, 17], [21, 17], [21, 21], [17, 21]]], dtype=np.float32),
-                    np.array([[[26, 26], [30, 26], [30, 30], [26, 30]]], dtype=np.float32),
+                    np.array(
+                        [[[17, 17], [21, 17], [21, 21], [17, 21]]], dtype=np.float32
+                    ),
+                    np.array(
+                        [[[26, 26], [30, 26], [30, 30], [26, 30]]], dtype=np.float32
+                    ),
                 ],
                 np.array([[1], [2]], dtype=np.int32),
                 [],
@@ -109,7 +115,9 @@ def test_aruco_detection_module_warns_when_same_quad_has_different_ids(caplog) -
             input_border_pixels=16,
         )
 
-        def fake_detect(candidate: np.ndarray) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
+        def fake_detect(
+            candidate: np.ndarray,
+        ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
             if candidate.shape == image.shape:
                 return (
                     [np.array([[[1, 1], [5, 1], [5, 5], [1, 5]]], dtype=np.float32)],
@@ -117,7 +125,11 @@ def test_aruco_detection_module_warns_when_same_quad_has_different_ids(caplog) -
                     [],
                 )
             return (
-                [np.array([[[17, 17], [21, 17], [21, 21], [17, 21]]], dtype=np.float32)],
+                [
+                    np.array(
+                        [[[17, 17], [21, 17], [21, 21], [17, 21]]], dtype=np.float32
+                    )
+                ],
                 np.array([[2]], dtype=np.int32),
                 [],
             )
@@ -180,7 +192,9 @@ def test_aruco_detection_module_preserves_video_frame_metadata() -> None:
             output_queue="detections",
         )
 
-        routed = await module.process(Message(frame, metadata={"source": "test"}), AsyncProcessor())
+        routed = await module.process(
+            Message(frame, metadata={"source": "test"}), AsyncProcessor()
+        )
 
         assert routed is not None
         assert routed.message.metadata["source"] == "test"
@@ -218,19 +232,35 @@ def test_aruco_detection_module_writes_debug_images(tmp_path: Path) -> None:
             debug=True,
             debug_dir=debug_dir,
         )
+        frame = VideoFrame(
+            image=make_aruco_test_image(),
+            frame_index=12,
+            timestamp_seconds=0.48,
+            loop_count=0,
+        )
 
-        routed = await module.process(Message(make_aruco_test_image()), AsyncProcessor())
+        routed = await module.process(Message(frame), AsyncProcessor())
 
         assert routed is not None
         for name in (
             "aruco_input.png",
-            "aruco_detected_markers.png",
-            "aruco_rejected_candidates.png",
+            "aruco_detected_markers_0012.png",
+            "aruco_rejected_candidates_0012.png",
         ):
             path = debug_dir / name
             assert path.exists()
             assert cv2.imread(str(path)) is not None
         assert cv2.imread(str(debug_dir / "aruco_input.png")).shape == (240, 240, 3)
+        assert cv2.imread(str(debug_dir / "aruco_detected_markers_0012.png")).shape == (
+            272,
+            272,
+            3,
+        )
+        assert cv2.imread(
+            str(debug_dir / "aruco_rejected_candidates_0012.png")
+        ).shape == (272, 272, 3)
+        assert not (debug_dir / "aruco_detected_markers.png").exists()
+        assert not (debug_dir / "aruco_rejected_candidates.png").exists()
         assert not (debug_dir / "aruco_padded_input.png").exists()
 
     asyncio.run(scenario())

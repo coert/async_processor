@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import cv2
 import numpy as np
@@ -53,6 +53,7 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         self.input_border_pixels = input_border_pixels
         self.debug = debug
         self.debug_dir = Path(debug_dir)
+        self._debug_frame_counter = 0
         if self.debug:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +95,9 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             value=(255, 255, 255),
         )
 
-    def _detect(self, image: np.ndarray) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
+    def _detect(
+        self, image: np.ndarray
+    ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
         if self.detector is not None:
             corners, ids, rejected = self.detector.detectMarkers(image)
         else:
@@ -110,6 +113,25 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         if ids is None or len(ids) == 0:
             return []
         return [int(value) for value in ids.reshape(-1)]
+
+    def _debug_frame_index(
+        self, payload: ImageFrame | VideoFrame | np.ndarray, metadata: Mapping[str, Any]
+    ) -> int:
+        frame_index: int | None = None
+        if isinstance(payload, (ImageFrame, VideoFrame)):
+            frame_index = int(payload.frame_index)
+        else:
+            raw_frame_index = metadata.get("frame_index")
+            if isinstance(raw_frame_index, (int, np.integer)):
+                frame_index = int(raw_frame_index)
+
+        if frame_index is not None:
+            self._debug_frame_counter = max(self._debug_frame_counter, frame_index + 1)
+            return frame_index
+
+        frame_index = self._debug_frame_counter
+        self._debug_frame_counter += 1
+        return frame_index
 
     @staticmethod
     def _corners_array(marker_corners: np.ndarray, offset: float = 0.0) -> np.ndarray:
@@ -148,8 +170,13 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             for marker_id, marker_corners in zip(self._marker_ids(raw_ids), raw_corners)
         ]
         padded_detections = [
-            (marker_id, self._corners_array(marker_corners, float(self.input_border_pixels)))
-            for marker_id, marker_corners in zip(self._marker_ids(padded_ids), padded_corners)
+            (
+                marker_id,
+                self._corners_array(marker_corners, float(self.input_border_pixels)),
+            )
+            for marker_id, marker_corners in zip(
+                self._marker_ids(padded_ids), padded_corners
+            )
         ]
 
         for raw_id, raw_quad in raw_detections:
@@ -182,35 +209,62 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             self._aruco.drawDetectedMarkers(output, corners, ids)
         return output
 
-    def _draw_rejected(self, image: np.ndarray, rejected: list[np.ndarray]) -> np.ndarray:
+    def _draw_rejected(
+        self, image: np.ndarray, rejected: list[np.ndarray]
+    ) -> np.ndarray:
         output = image.copy()
         if rejected:
             rejected_markers = [
                 np.asarray(candidate, dtype=np.float32).reshape(1, 4, 2)
                 for candidate in rejected
             ]
-            self._aruco.drawDetectedMarkers(output, rejected_markers, None, (255, 0, 255))
+            self._aruco.drawDetectedMarkers(
+                output, rejected_markers, None, (255, 0, 255)
+            )
         return output
+
+    @staticmethod
+    def _shift_marker_groups(
+        marker_groups: list[np.ndarray],
+        offset: float,
+    ) -> list[np.ndarray]:
+        if offset == 0:
+            return [
+                np.asarray(group, dtype=np.float32).reshape(1, 4, 2)
+                for group in marker_groups
+            ]
+        return [
+            np.asarray(group, dtype=np.float32).reshape(1, 4, 2) + offset
+            for group in marker_groups
+        ]
+
+    @staticmethod
+    def _debug_filename(prefix: str, stem: str, frame_index: int | None = None) -> str:
+        if frame_index is None:
+            return f"{prefix}{stem}.png"
+        return f"{prefix}{stem}_{frame_index:04}.png"
 
     def _write_debug_images(
         self,
         image: np.ndarray,
+        overlay_image: np.ndarray,
         corners: list[np.ndarray],
         ids: np.ndarray | None,
         rejected: list[np.ndarray],
         *,
         prefix: str = "aruco_",
+        frame_index: int | None = None,
     ) -> None:
         if not self.debug:
             return
-        self._write_debug_image(f"{prefix}input.png", image)
+        self._write_debug_image(self._debug_filename(prefix, "input"), image)
         self._write_debug_image(
-            f"{prefix}detected_markers.png",
-            self._draw_detected(image, corners, ids),
+            self._debug_filename(prefix, "detected_markers", frame_index),
+            self._draw_detected(overlay_image, corners, ids),
         )
         self._write_debug_image(
-            f"{prefix}rejected_candidates.png",
-            self._draw_rejected(image, rejected),
+            self._debug_filename(prefix, "rejected_candidates", frame_index),
+            self._draw_rejected(overlay_image, rejected),
         )
 
     async def process(
@@ -219,7 +273,10 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         context: ModuleContext,
     ) -> RoutedMessage[ArucoDetectionResult] | None:
         payload = message.payload
-        image = payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        frame_index = self._debug_frame_index(payload, message.metadata)
+        image = (
+            payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        )
         validate_color_image(image)
 
         raw_corners, raw_ids, raw_rejected = self._detect(image)
@@ -227,6 +284,7 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             padded_image = self._pad_input_image(image, self.input_border_pixels)
             padded_corners, padded_ids, padded_rejected = self._detect(padded_image)
         else:
+            padded_image = image
             padded_corners = []
             padded_ids = None
             padded_rejected = []
@@ -241,16 +299,28 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         detections: list[ArucoMarkerDetection] = []
         detection_passes: dict[int, str] = {}
         seen_marker_ids: set[int] = set()
+        debug_union_corners: list[np.ndarray] = []
+        raw_debug_corners = self._shift_marker_groups(
+            raw_corners, float(self.input_border_pixels)
+        )
+        padded_debug_corners = self._shift_marker_groups(padded_corners, 0.0)
 
-        for pass_name, detected_corners, detected_ids, offset in (
-            ("raw", raw_corners, raw_ids, 0.0),
-            ("padded", padded_corners, padded_ids, float(self.input_border_pixels)),
+        for pass_name, detected_corners, detected_ids, offset, debug_corners in (
+            ("raw", raw_corners, raw_ids, 0.0, raw_debug_corners),
+            (
+                "padded",
+                padded_corners,
+                padded_ids,
+                float(self.input_border_pixels),
+                padded_debug_corners,
+            ),
         ):
             if detected_ids is None or len(detected_ids) == 0:
                 continue
-            for marker_id, marker_corners in zip(
+            for marker_id, marker_corners, debug_marker_corners in zip(
                 self._marker_ids(detected_ids),
                 detected_corners,
+                debug_corners,
             ):
                 if marker_id in seen_marker_ids:
                     continue
@@ -263,28 +333,51 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
                 )
                 detection_passes[marker_id] = pass_name
                 seen_marker_ids.add(marker_id)
+                debug_union_corners.append(debug_marker_corners)
 
         rejected_candidates = [
             np.asarray(candidate, dtype=np.float32).reshape(4, 2)
             for candidate in raw_rejected
         ]
         rejected_candidates.extend(
-            np.asarray(candidate, dtype=np.float32).reshape(4, 2) - float(self.input_border_pixels)
+            np.asarray(candidate, dtype=np.float32).reshape(4, 2)
+            - float(self.input_border_pixels)
+            for candidate in padded_rejected
+        )
+        debug_rejected_candidates = [
+            candidate.reshape(4, 2)
+            for candidate in self._shift_marker_groups(
+                raw_rejected,
+                float(self.input_border_pixels),
+            )
+        ]
+        debug_rejected_candidates.extend(
+            np.asarray(candidate, dtype=np.float32).reshape(4, 2)
             for candidate in padded_rejected
         )
 
         if not detections:
-            self._write_debug_images(image, [], None, rejected_candidates)
+            self._write_debug_images(
+                image,
+                padded_image,
+                [],
+                None,
+                debug_rejected_candidates,
+                frame_index=frame_index,
+            )
             logger.debug("No ArUco markers detected")
             return None
 
         marker_ids = [detection.marker_id for detection in detections]
-        union_corners = [
-            detection.corners.reshape(1, 4, 2)
-            for detection in detections
-        ]
         union_ids = np.asarray(marker_ids, dtype=np.int32).reshape(-1, 1)
-        self._write_debug_images(image, union_corners, union_ids, rejected_candidates)
+        self._write_debug_images(
+            image,
+            padded_image,
+            debug_union_corners,
+            union_ids,
+            debug_rejected_candidates,
+            frame_index=frame_index,
+        )
 
         metadata: dict[str, Any] = dict(message.metadata)
         if isinstance(payload, (ImageFrame, VideoFrame)):
