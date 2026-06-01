@@ -14,3 +14,4 @@ wheels/
 !/data/1-input.mp4
 !/data/aruco_dict.json
 !/data/test_frame.jpg
+!/data/video-1-marker-gt.json
