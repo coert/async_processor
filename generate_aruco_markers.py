@@ -17,7 +17,7 @@ DEFAULT_IMAGE_SIZE = 512
 DEFAULT_BORDER_BITS = 1
 
 STANDARD_DICTIONARIES = (
-    "aruco",
+    "aruco_original",
     "4x4_1000",
     "5x5_1000",
     "6x6_1000",
@@ -26,7 +26,7 @@ STANDARD_DICTIONARIES = (
 )
 
 EXPLICIT_MARKER_SIZES = {
-    "aruco": 5,
+    "aruco_original": 5,
     "mip_36h12": 6,
     "april_16h5": 4,
     "april_25h9": 5,
@@ -107,13 +107,13 @@ def marker_size_for_dictionary(name: str) -> int:
     raise ValueError(f"Cannot infer marker size for dictionary {name!r}")
 
 
-def dictionary_names(data: dict[str, object], include_apriltag: bool = False) -> list[str]:
+def dictionary_names(
+    data: dict[str, object], include_apriltag: bool = False
+) -> list[str]:
     names = [name for name in STANDARD_DICTIONARIES if name in data]
     if include_apriltag:
         names.extend(
-            name
-            for name in data
-            if name.startswith("april_") and name not in names
+            name for name in data if name.startswith("april_") and name not in names
         )
     return names
 
@@ -216,7 +216,7 @@ def generate_markers(
     generated: list[GeneratedMarker] = []
 
     for dictionary in dictionaries:
-        dictionary_dir = output_dir / dictionary.name
+        dictionary_dir = output_dir / dictionary.name.upper()
         dictionary_dir.mkdir(parents=True, exist_ok=True)
 
         for marker_id, marker_bytes in enumerate(dictionary.markers):

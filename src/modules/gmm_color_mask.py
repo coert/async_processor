@@ -55,7 +55,9 @@ class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
 
     def _load_model(self) -> None:
         if not self.model_path.exists():
-            raise FileNotFoundError(f"GMM color classifier model not found: {self.model_path}")
+            raise FileNotFoundError(
+                f"GMM color classifier model not found: {self.model_path}"
+            )
 
         data = joblib.load(self.model_path)
         if not isinstance(data, dict):
@@ -105,14 +107,20 @@ class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
 
     @property
     def _debug_mask_path(self) -> Path:
-        return self.debug_dir / "gmm_color_mask.png"
+        return self.debug_dir / "frame.jpg"
 
-    def _write_debug_mask(self, mask: np.ndarray) -> None:
+    def _write_debug_mask(
+        self, mask: np.ndarray, frame_index: int | None = None
+    ) -> None:
         if not self.debug:
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(self._debug_mask_path), mask):
-            raise RuntimeError(f"Failed to write GMM color mask debug image: {self._debug_mask_path}")
+        if frame_index is not None:
+            path = self.debug_dir / f"frame_{frame_index:05d}.jpg"
+        else:
+            path = self.debug_dir / "frame.jpg"
+        if not cv2.imwrite(str(path), mask):
+            raise RuntimeError(f"Failed to write GMM color mask debug image: {path}")
 
     async def process(
         self,
@@ -120,21 +128,25 @@ class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray]:
         payload = message.payload
-        image = payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        image = (
+            payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
+        )
         validate_color_image(image)
 
         metadata: dict[str, Any] = dict(message.metadata)
+        frame_index: int | None = None
         if isinstance(payload, (ImageFrame, VideoFrame)):
+            frame_index = payload.frame_index
             metadata.update(
                 {
-                    "frame_index": payload.frame_index,
+                    "frame_index": frame_index,
                     "timestamp_seconds": payload.timestamp_seconds,
                     "loop_count": payload.loop_count,
                 }
             )
 
         mask = self._mask(image)
-        self._write_debug_mask(mask)
+        self._write_debug_mask(mask, frame_index)
         return RoutedMessage(
             destination=self.output_queue,
             message=Message(payload=mask, metadata=metadata),

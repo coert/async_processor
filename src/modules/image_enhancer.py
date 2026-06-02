@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Literal
 
 import cv2
@@ -13,7 +14,8 @@ from .base import BaseModule, ModuleContext
 
 A_SHIFT = 0.0
 B_SHIFT = 0.0
-RED_STRENGTH = 35.0
+
+RED_STRENGTH = 15
 CLAHE_CLIP = 2.0
 OMEGA = 0.75
 T_MIN = 0.15
@@ -65,21 +67,40 @@ def dehaze_underwater(image: np.ndarray) -> np.ndarray:
     transmission_3c = cv2.merge([transmission, transmission, transmission])
     scene = (image.astype(np.float32) - atmospheric_light) / transmission_3c
     scene = scene + atmospheric_light
-    return np.clip(scene, 0, 255).astype(np.uint8)
+    return scene
 
 
-def sharpen_underwater(image: np.ndarray) -> np.ndarray:
+def sharpen_underwater_float(image: np.ndarray) -> np.ndarray:
     blurred = cv2.GaussianBlur(image, (3, 3), 0)
     return cv2.addWeighted(image, 1.2, blurred, -0.2, 0)
 
 
 def gamma_correct(image: np.ndarray, gamma: float = GAMMA) -> np.ndarray:
     inv_gamma = 1.0 / max(gamma, 1e-6)
-    table = np.array(
-        [(i / 255.0) ** inv_gamma * 255 for i in range(256)],
-        dtype=np.uint8,
-    )
-    return cv2.LUT(image, table)
+    if image.dtype == np.uint8:
+        table = np.array(
+            [(i / 255.0) ** inv_gamma * 255 for i in range(256)],
+            dtype=np.uint8,
+        )
+        return cv2.LUT(image, table)
+    else:
+        return np.clip(np.power(image / 255.0, inv_gamma) * 255.0, 0, None)
+
+
+def compress_highlights(image: np.ndarray) -> np.ndarray:
+    """Compress highlights before clipping to preserve color ratios.
+
+    Instead of hard-clipping pixels where any channel exceeds 255,
+    only scale down those overexposed pixels so their relative color
+    balance is preserved (e.g. an orange beam stays orange, not red).
+    """
+    max_channel = np.max(image, axis=2, keepdims=True)
+    overexposed = max_channel > 255.0
+
+    scale = np.where(overexposed, 255.0 / np.clip(max_channel, 1.0, None), 1.0)
+    compressed = image * scale
+
+    return np.clip(compressed, 0, 255).astype(np.uint8)
 
 
 def enhance_underwater(image: np.ndarray) -> np.ndarray:
@@ -87,8 +108,9 @@ def enhance_underwater(image: np.ndarray) -> np.ndarray:
     enhanced = restore_red_channel(enhanced)
     enhanced = clahe_enhance_bgr(enhanced)
     enhanced = dehaze_underwater(enhanced)
-    enhanced = sharpen_underwater(enhanced)
+    enhanced = sharpen_underwater_float(enhanced)
     enhanced = gamma_correct(enhanced)
+    enhanced = compress_highlights(enhanced)
     return enhanced
 
 
@@ -118,12 +140,18 @@ class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         output_queue: str,
         *,
         mode: EnhancementMode = "underwater",
+        debug: bool = False,
+        debug_dir: Path | str = Path("data/debug"),
     ) -> None:
         if not output_queue:
             raise ValueError("Module output_queue cannot be empty.")
         super().__init__(name=name, input_queue=input_queue)
         self.output_queue = output_queue
         self.mode = mode
+        self.debug = debug
+        self.debug_dir = Path(debug_dir)
+        if self.debug:
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
 
     async def process(
         self,
@@ -139,6 +167,7 @@ class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
                 payload,
                 image=enhanced_image,
             )
+            self._write_debug_image(payload.image, enhanced_image, payload.frame_index)
         else:
             metadata.setdefault(ORIGINAL_FRAME_METADATA_KEY, payload.copy())
             enhanced_payload = apply_enhancement(payload, self.mode)
@@ -150,3 +179,17 @@ class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
                 metadata=metadata,
             ),
         )
+
+    def _write_debug_image(
+        self,
+        original: np.ndarray,
+        enhanced: np.ndarray,
+        frame_index: int,
+    ) -> None:
+        if not self.debug:
+            return
+        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_image = np.hstack([original, enhanced])
+        path = self.debug_dir / f"frame_{frame_index:05d}.jpg"
+        if not cv2.imwrite(str(path), debug_image):
+            raise RuntimeError(f"Failed to write image enhancer debug image: {path}")

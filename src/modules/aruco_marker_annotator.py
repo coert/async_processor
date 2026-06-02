@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 ORIGINAL_FRAME_METADATA_KEY = "original_frame_image"
 SOURCE_FRAME_METADATA_KEY = "source_frame_image"
 CUTOUT_TO_SOURCE_HOMOGRAPHY_METADATA_KEY = "cutout_to_source_homography"
-MARKER_TEMPLATE_PREFIX = "6x6_1000"
 
 
 class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
@@ -29,7 +28,7 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         *,
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
-        marker_template_dir: Path | str = Path("data/aruco/6x6_1000"),
+        dictionary_name: str = "DICT_6x6_1000",
         template_marker_size: int = 64,
         template_margin_pixels: int = 12,
     ) -> None:
@@ -44,6 +43,10 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         self.output_queue = output_queue
         self.debug = debug
         self.debug_dir = Path(debug_dir)
+        self.marker_template_prefix = dictionary_name.replace("DICT_", "").lower()
+        marker_template_dir: Path | str = Path(
+            f"data/aruco/{self.marker_template_prefix.upper()}"
+        )
         self.marker_template_dir = Path(marker_template_dir)
         self.template_marker_size = template_marker_size
         self.template_margin_pixels = template_margin_pixels
@@ -167,7 +170,11 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         debug_image = image.copy()
-        path = self.debug_dir / "aruco_annotated_frame.png"
+        frame_index = metadata.get("frame_index")
+        if frame_index is not None:
+            path = self.debug_dir / f"frame_{int(frame_index):05d}.jpg"
+        else:
+            path = self.debug_dir / "frame.jpg"
         if not cv2.imwrite(str(path), debug_image):
             logger.warning("Failed to write ArUco annotation debug image: %s", path)
 
@@ -246,7 +253,8 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
 
     def _template_path(self, marker_id: int) -> Path:
         return (
-            self.marker_template_dir / f"{MARKER_TEMPLATE_PREFIX}_{marker_id:04d}.png"
+            self.marker_template_dir
+            / f"{self.marker_template_prefix}_{marker_id:04d}.png"
         )
 
     def _blank_template(self, cell_size: int) -> np.ndarray:

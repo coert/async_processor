@@ -17,8 +17,8 @@ def optical_flow_debug_path(debug_dir: Path, metadata: dict[str, Any]) -> Path:
     if frame_index is None:
         frame_text = "unknown"
     else:
-        frame_text = f"{int(frame_index):06d}"
-    return debug_dir / f"optical_flow_corners_frame_{frame_text}.png"
+        frame_text = f"{int(frame_index):05d}"
+    return debug_dir / f"frame_{frame_text}_optical_flow_corners.jpg"
 
 
 def marker_detected_quad_debug_path(debug_dir: Path, metadata: dict[str, Any]) -> Path:
@@ -26,8 +26,8 @@ def marker_detected_quad_debug_path(debug_dir: Path, metadata: dict[str, Any]) -
     if frame_index is None:
         frame_text = "unknown"
     else:
-        frame_text = f"{int(frame_index):04d}"
-    return debug_dir / f"marker_detected_quad_{frame_text}.png"
+        frame_text = f"{int(frame_index):05d}"
+    return debug_dir / f"frame_{frame_text}_marker_detected_quad.jpg"
 
 
 def write_marker_detected_quad_debug_image(

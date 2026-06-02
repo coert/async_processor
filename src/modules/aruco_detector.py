@@ -72,10 +72,26 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
 
     def _create_detector_parameters(self) -> Any:
         if hasattr(self._aruco, "DetectorParameters"):
-            return self._aruco.DetectorParameters()
-        if hasattr(self._aruco, "DetectorParameters_create"):
-            return self._aruco.DetectorParameters_create()
-        raise RuntimeError("OpenCV ArUco detector parameters API is unavailable.")
+            params = self._aruco.DetectorParameters()
+        elif hasattr(self._aruco, "DetectorParameters_create"):
+            params = self._aruco.DetectorParameters_create()
+        else:
+            raise RuntimeError("OpenCV ArUco detector parameters API is unavailable.")
+
+        # Configure detection parameters
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 51
+        params.adaptiveThreshWinSizeStep = 4
+        params.adaptiveThreshConstant = 3
+
+        params.minMarkerPerimeterRate = 0.01
+        params.maxMarkerPerimeterRate = 4.0
+
+        params.polygonalApproxAccuracyRate = 0.08
+        params.cornerRefinementMethod = self._aruco.CORNER_REFINE_SUBPIX
+        params.errorCorrectionRate = 0.8
+
+        return params
 
     def _create_detector(self) -> Any | None:
         if hasattr(self._aruco, "ArucoDetector"):
@@ -95,18 +111,43 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             value=(255, 255, 255),
         )
 
+    def _preprocess_for_detection(
+        self, image: np.ndarray, scale: float = 0.15
+    ) -> np.ndarray:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Downscale with AREA then upscale with NEAREST for noise reduction
+        small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        gray = clahe.apply(small)
+
+        blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        gray = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
+
+        gray = cv2.bilateralFilter(gray, 5, 30, 30)
+
+        gray = cv2.resize(
+            gray,
+            (image.shape[1], image.shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        return gray
+
     def _detect(
         self, image: np.ndarray
-    ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]:
+    ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray], np.ndarray]:
+        processed = self._preprocess_for_detection(image)
         if self.detector is not None:
-            corners, ids, rejected = self.detector.detectMarkers(image)
+            corners, ids, rejected = self.detector.detectMarkers(processed)
         else:
             corners, ids, rejected = self._aruco.detectMarkers(
-                image,
+                processed,
                 self.dictionary,
                 parameters=self.parameters,
             )
-        return list(corners), ids, list(rejected)
+        return list(corners), ids, list(rejected), processed
 
     @staticmethod
     def _marker_ids(ids: np.ndarray | None) -> list[int]:
@@ -241,8 +282,8 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
     @staticmethod
     def _debug_filename(prefix: str, stem: str, frame_index: int | None = None) -> str:
         if frame_index is None:
-            return f"{prefix}{stem}.png"
-        return f"{prefix}{stem}_{frame_index:04}.png"
+            return f"frame_{stem}.jpg"
+        return f"frame_{frame_index:05d}_{stem}.jpg"
 
     def _write_debug_images(
         self,
@@ -279,15 +320,27 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         )
         validate_color_image(image)
 
-        raw_corners, raw_ids, raw_rejected = self._detect(image)
+        raw_corners, raw_ids, raw_rejected, raw_preprocessed = self._detect(image)
         if self.input_border_pixels > 0:
             padded_image = self._pad_input_image(image, self.input_border_pixels)
-            padded_corners, padded_ids, padded_rejected = self._detect(padded_image)
+            padded_corners, padded_ids, padded_rejected, padded_preprocessed = (
+                self._detect(padded_image)
+            )
         else:
             padded_image = image
             padded_corners = []
             padded_ids = None
             padded_rejected = []
+            padded_preprocessed = raw_preprocessed
+
+        self._write_debug_image(
+            self._debug_filename("aruco_", "preprocessed_raw", frame_index),
+            raw_preprocessed,
+        )
+        self._write_debug_image(
+            self._debug_filename("aruco_", "preprocessed_padded", frame_index),
+            padded_preprocessed,
+        )
 
         self._warn_on_overlapping_id_mismatches(
             raw_ids,

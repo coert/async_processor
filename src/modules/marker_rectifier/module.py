@@ -11,11 +11,7 @@ from ...image import ImageFrame
 from ...messages import Message, RoutedMessage
 from ...video import VideoFrame
 from ..base import BaseModule, ModuleContext
-from ..image_enhancer import (
-    ORIGINAL_FRAME_METADATA_KEY,
-    EnhancementMode,
-    validate_color_image,
-)
+from ..image_enhancer import EnhancementMode, validate_color_image
 from .core import collect_line_debug, fit_square
 from .debug import draw_detected_quad, draw_hough_debug, write_debug_image
 from .edge_detection import build_edge_variants
@@ -52,19 +48,17 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
         if self.debug:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
-    @property
-    def _debug_input_path(self) -> Path:
-        return self.debug_dir / "marker_input.png"
+    def _debug_input_path(self, fidx: int) -> Path:
+        return self.debug_dir / f"frame_{fidx:05d}_input.jpg"
 
-    @property
-    def _debug_hough_lines_path(self) -> Path:
-        return self.debug_dir / "marker_hough_lines.png"
+    def _debug_hough_lines_path(self, fidx: int) -> Path:
+        return self.debug_dir / f"frame_{fidx:05d}_hough_lines.jpg"
 
     def _debug_detected_quad_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"marker_detected_quad_{fidx:04}.png"
+        return self.debug_dir / f"frame_{fidx:05d}_detected_quad.jpg"
 
     def _debug_cutout_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"marker_rectified_cutout_{fidx:04}.png"
+        return self.debug_dir / f"frame_{fidx:05d}_rectified_cutout.jpg"
 
     def _debug_frame_index(
         self, payload: ImageFrame | VideoFrame | np.ndarray, metadata: Mapping[str, Any]
@@ -85,21 +79,11 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
         self._debug_frame_counter += 1
         return frame_index
 
+    @staticmethod
     def _quad_detection_image(
-        self,
-        image: np.ndarray,
-        metadata: Mapping[str, Any],
+        image: np.ndarray, _metadata: Mapping[str, Any]
     ) -> np.ndarray:
-        original_frame = metadata.get(ORIGINAL_FRAME_METADATA_KEY)
-        if not isinstance(original_frame, np.ndarray):
-            return image
-        if original_frame.shape != image.shape or original_frame.dtype != image.dtype:
-            return image
-        try:
-            validate_color_image(original_frame)
-        except TypeError, ValueError:
-            return image
-        return original_frame
+        return image
 
     @staticmethod
     def _prior_quad(metadata: Mapping[str, Any]) -> np.ndarray | None:
@@ -122,12 +106,14 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
         if not self.debug:
             return
 
-        write_debug_image(self._debug_input_path, debug_image)
+        write_debug_image(self._debug_input_path(fidx), debug_image)
         write_debug_image(
-            self._debug_hough_lines_path, draw_hough_debug(debug_image, line_debug)
+            self._debug_hough_lines_path(fidx),
+            draw_hough_debug(debug_image, line_debug),
         )
         write_debug_image(
-            self._debug_detected_quad_path(fidx), draw_detected_quad(debug_image, quad)
+            self._debug_detected_quad_path(fidx),
+            draw_detected_quad(debug_image, quad),
         )
         if cutout is None:
             cutout = np.zeros(
@@ -163,9 +149,7 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
         try:
             if prior_quad is None or force_full_rectifier:
                 rectifier_search_mode = "full_search"
-                _, edge_variants = build_edge_variants(
-                    quad_image, self.preprocess_mode
-                )
+                _, edge_variants = build_edge_variants(quad_image, self.preprocess_mode)
                 if self.debug:
                     line_debug = collect_line_debug(quad_image, edge_variants)
                 fit_result = fit_square(

@@ -125,6 +125,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Write processing debug images to data/debug/.",
     )
+    parser.add_argument(
+        "--dictionary-name",
+        default="DICT_6x6_1000",
+        help="Name of the ArUco marker dictionary to use, e.g. DICT_6x6_1000.",
+    )
     return parser.parse_args(argv)
 
 
@@ -149,6 +154,8 @@ def register_processing_modules(
             name="image-enhancer",
             input_queue=FRAME_QUEUE,
             output_queue=ENHANCED_FRAME_QUEUE,
+            debug=args.debug,
+            debug_dir=Path("data/debug/image-enhancer"),
         )
     )
     fanout_output_queues = [MARKER_FRAME_QUEUE]
@@ -170,7 +177,7 @@ def register_processing_modules(
                 output_queue=COLOR_MASK_QUEUE,
                 model_path=GMM_MODEL_PATH,
                 debug=args.debug,
-                debug_dir=Path("data/debug"),
+                debug_dir=Path("data/debug/gmm-color-mask"),
             )
         )
         logger.info("GMM color mask module enabled with model %s", GMM_MODEL_PATH)
@@ -183,7 +190,8 @@ def register_processing_modules(
             input_queue=MARKER_FRAME_QUEUE,
             output_queue=ARUCO_DETECTIONS_QUEUE,
             debug=args.debug,
-            debug_dir=Path("data/debug"),
+            debug_dir=Path("data/debug/optical-flow-marker-tracker"),
+            dictionary_name=args.dictionary_name,
             emit_empty_detections=emit_empty_detections,
         )
     )
@@ -196,7 +204,8 @@ def register_processing_modules(
             input_queue=ARUCO_DETECTIONS_QUEUE,
             output_queue=ANNOTATED_FRAMES_QUEUE,
             debug=args.debug,
-            debug_dir=Path("data/debug"),
+            debug_dir=Path("data/debug/aruco-marker-annotator"),
+            dictionary_name=args.dictionary_name,
         )
     )
 

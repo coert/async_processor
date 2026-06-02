@@ -59,6 +59,7 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         max_backtrack_error: float = 3.0,
         min_marker_area: float = 16.0,
         min_tracking_confidence: float = 0.75,
+        dictionary_name: str = "DICT_6X6_1000",
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
         emit_empty_detections: bool = False,
@@ -93,6 +94,7 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         self.detector = detector or ArucoDetectionModule(
             name=f"{name}-aruco-detector",
             input_queue=f"{name}-cutouts",
+            dictionary_name=dictionary_name,
             output_queue=output_queue,
             debug=debug,
             debug_dir=debug_dir,
