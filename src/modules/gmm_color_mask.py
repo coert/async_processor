@@ -23,6 +23,8 @@ REQUIRED_MODEL_KEYS = {
 
 
 class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -107,7 +109,7 @@ class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
 
     @property
     def _debug_mask_path(self) -> Path:
-        return self.debug_dir / "frame.jpg"
+        return self.debug_dir / "gmm_color_mask.png"
 
     def _write_debug_mask(
         self, mask: np.ndarray, frame_index: int | None = None
@@ -116,13 +118,20 @@ class GMMColorMaskModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         if frame_index is not None:
-            path = self.debug_dir / f"frame_{frame_index:05d}.jpg"
+            path = self.debug_dir / f"gmm_color_mask_{frame_index:05d}.png"
         else:
-            path = self.debug_dir / "frame.jpg"
+            path = self._debug_mask_path
         if not cv2.imwrite(str(path), mask):
             raise RuntimeError(f"Failed to write GMM color mask debug image: {path}")
 
     async def process(
+        self,
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[np.ndarray]:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
         self,
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,

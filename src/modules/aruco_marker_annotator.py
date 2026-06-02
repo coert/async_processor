@@ -20,6 +20,8 @@ CUTOUT_TO_SOURCE_HOMOGRAPHY_METADATA_KEY = "cutout_to_source_homography"
 
 
 class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -28,7 +30,8 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         *,
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
-        dictionary_name: str = "DICT_6x6_1000",
+        dictionary_name: str = "DICT_6X6_1000",
+        marker_template_dir: Path | str | None = None,
         template_marker_size: int = 64,
         template_margin_pixels: int = 12,
     ) -> None:
@@ -44,10 +47,14 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         self.debug = debug
         self.debug_dir = Path(debug_dir)
         self.marker_template_prefix = dictionary_name.replace("DICT_", "").lower()
-        marker_template_dir: Path | str = Path(
-            f"data/aruco/{self.marker_template_prefix.upper()}"
-        )
-        self.marker_template_dir = Path(marker_template_dir)
+        if marker_template_dir is None:
+            exact_case_dir = Path(f"data/aruco/{self.marker_template_prefix}")
+            upper_case_dir = Path(f"data/aruco/{self.marker_template_prefix.upper()}")
+            self.marker_template_dir = (
+                exact_case_dir if exact_case_dir.exists() else upper_case_dir
+            )
+        else:
+            self.marker_template_dir = Path(marker_template_dir)
         self.template_marker_size = template_marker_size
         self.template_margin_pixels = template_margin_pixels
         if self.debug:
@@ -170,11 +177,7 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
         debug_image = image.copy()
-        frame_index = metadata.get("frame_index")
-        if frame_index is not None:
-            path = self.debug_dir / f"frame_{int(frame_index):05d}.jpg"
-        else:
-            path = self.debug_dir / "frame.jpg"
+        path = self.debug_dir / "aruco_annotated_frame.png"
         if not cv2.imwrite(str(path), debug_image):
             logger.warning("Failed to write ArUco annotation debug image: %s", path)
 
@@ -336,6 +339,13 @@ class ArucoMarkerAnnotationModule(BaseModule[ArucoDetectionResult]):
         return rows, columns
 
     async def process(
+        self,
+        message: Message[ArucoDetectionResult],
+        context: ModuleContext,
+    ) -> RoutedMessage[np.ndarray] | None:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
         self,
         message: Message[ArucoDetectionResult],
         context: ModuleContext,

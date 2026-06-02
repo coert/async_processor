@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -46,7 +48,27 @@ from .models import (
 logger = logging.getLogger("src.modules.optical_flow_marker_tracker")
 
 
+@dataclass
+class _TimingStats:
+    count: int = 0
+    total_seconds: float = 0.0
+    max_seconds: float = 0.0
+
+    def record(self, elapsed_seconds: float) -> None:
+        self.count += 1
+        self.total_seconds += elapsed_seconds
+        self.max_seconds = max(self.max_seconds, elapsed_seconds)
+
+    @property
+    def average_seconds(self) -> float:
+        if self.count == 0:
+            return 0.0
+        return self.total_seconds / self.count
+
+
 class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -58,7 +80,7 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         max_forward_error: float = 25.0,
         max_backtrack_error: float = 3.0,
         min_marker_area: float = 16.0,
-        min_tracking_confidence: float = 0.75,
+        min_tracking_confidence: float = 0.5,
         dictionary_name: str = "DICT_6X6_1000",
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
@@ -100,28 +122,66 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             debug_dir=debug_dir,
         )
         self._state: _TrackingState | None = None
+        self._timing_stats: dict[str, _TimingStats] = {
+            stage_name: _TimingStats()
+            for stage_name in (
+                "total",
+                "gray",
+                "track_state",
+                "rectifier",
+                "detector",
+                "seed_state",
+                "debug_optical_flow",
+                "debug_detector",
+            )
+        }
+        self._refresh_reason_counts: dict[str, int] = {}
+        self._rectifier_mode_counts: dict[str, int] = {}
+        self._timing_logged = False
 
     async def process(
         self,
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[ArucoDetectionResult] | None:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
+        self,
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[ArucoDetectionResult] | None:
+        total_started_at = time.perf_counter()
         payload = message.payload
         image = (
             payload.image if isinstance(payload, (ImageFrame, VideoFrame)) else payload
         )
         validate_color_image(image)
 
+        gray_started_at = time.perf_counter()
         gray = self._gray(image)
-        tracking_plan = self._track_from_state(message, image, gray)
+        self._timing_stats["gray"].record(time.perf_counter() - gray_started_at)
 
-        return await self._run_detector_fallback(
+        track_state_started_at = time.perf_counter()
+        tracking_plan = self._track_from_state(message, image, gray)
+        self._timing_stats["track_state"].record(
+            time.perf_counter() - track_state_started_at
+        )
+        self._increment_count(self._refresh_reason_counts, tracking_plan.refresh_reason)
+        self._increment_count(
+            self._rectifier_mode_counts,
+            "full_search" if tracking_plan.force_full_rectifier else "trusted_prior",
+        )
+
+        result = self._run_detector_fallback(
             message,
             context,
             image,
             gray,
             tracking_plan=tracking_plan,
         )
+        self._timing_stats["total"].record(time.perf_counter() - total_started_at)
+        return result
 
     def _track_from_state(
         self,
@@ -177,8 +237,12 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         if not quad_result.succeeded:
             metadata["tracked_quad_failure_reason"] = quad_result.reason
 
+        debug_started_at = time.perf_counter()
         self._write_optical_flow_debug_image(
             image, [], state.quad, quad_result, metadata
+        )
+        self._timing_stats["debug_optical_flow"].record(
+            time.perf_counter() - debug_started_at
         )
 
         return _QuadTrackingPlan(
@@ -189,7 +253,7 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             confidence=quad_confidence,
         )
 
-    async def _run_detector_fallback(
+    def _run_detector_fallback(
         self,
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
@@ -216,18 +280,24 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
             fallback_metadata["tracked_quad_failure_reason"] = (
                 tracking_plan.quad_result.reason
             )
-        rectified = await self.rectifier.process(
+        rectifier_started_at = time.perf_counter()
+        rectified = self.rectifier.process_blocking(
             Message(payload=message.payload, metadata=fallback_metadata),
             context,
+        )
+        self._timing_stats["rectifier"].record(
+            time.perf_counter() - rectifier_started_at
         )
         if rectified is None:
             self._state = None
             return self._empty_detection_result(message, image)
 
-        detected = await self.detector.process(
+        detector_started_at = time.perf_counter()
+        detected = self.detector.process_blocking(
             cast(Message[ImageFrame | VideoFrame | np.ndarray], rectified.message),
             context,
         )
+        self._timing_stats["detector"].record(time.perf_counter() - detector_started_at)
         if detected is None:
             self._state = None
             return self._empty_detection_result(message, image)
@@ -236,12 +306,18 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
         metadata.update(self._base_metadata(message, image))
         metadata["tracking_source"] = "detector"
         metadata.setdefault("detection_coordinate_space", "cutout")
+        seed_started_at = time.perf_counter()
         seeded_markers = self._seed_state(gray, detected.message.payload, metadata)
+        self._timing_stats["seed_state"].record(time.perf_counter() - seed_started_at)
+        debug_started_at = time.perf_counter()
         self._write_detector_debug_image(
             image,
             seeded_markers,
             self._state.quad if self._state is not None else None,
             metadata,
+        )
+        self._timing_stats["debug_detector"].record(
+            time.perf_counter() - debug_started_at
         )
 
         return RoutedMessage(
@@ -479,6 +555,57 @@ class OpticalFlowMarkerTrackingModule(BaseModule[ImageFrame | VideoFrame | np.nd
     @staticmethod
     def _gray(image: np.ndarray) -> np.ndarray:
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def _increment_count(counts: dict[str, int], key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    def close(self) -> None:
+        if self._timing_logged:
+            return
+        self._timing_logged = True
+
+        total_stats = self._timing_stats["total"]
+        if total_stats.count == 0:
+            return
+
+        logger.info("Tracker timing summary:")
+        for stage_name in (
+            "total",
+            "gray",
+            "track_state",
+            "rectifier",
+            "detector",
+            "seed_state",
+            "debug_optical_flow",
+            "debug_detector",
+        ):
+            stats = self._timing_stats[stage_name]
+            if stats.count == 0:
+                continue
+            logger.info(
+                "  %s: count=%s avg=%.2fms max=%.2fms total=%.2fms",
+                stage_name,
+                stats.count,
+                stats.average_seconds * 1000.0,
+                stats.max_seconds * 1000.0,
+                stats.total_seconds * 1000.0,
+            )
+
+        logger.info(
+            "Tracker refresh reasons: %s",
+            ", ".join(
+                f"{reason}={count}"
+                for reason, count in sorted(self._refresh_reason_counts.items())
+            ),
+        )
+        logger.info(
+            "Tracker rectifier modes: %s",
+            ", ".join(
+                f"{mode}={count}"
+                for mode, count in sorted(self._rectifier_mode_counts.items())
+            ),
+        )
 
     @staticmethod
     def _transform_points(points: np.ndarray, homography: np.ndarray) -> np.ndarray:

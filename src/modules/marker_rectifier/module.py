@@ -22,6 +22,8 @@ logger = logging.getLogger("src.modules.marker_rectifier")
 
 
 class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -49,16 +51,16 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
     def _debug_input_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"frame_{fidx:05d}_input.jpg"
+        return self.debug_dir / "marker_input.png"
 
     def _debug_hough_lines_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"frame_{fidx:05d}_hough_lines.jpg"
+        return self.debug_dir / "marker_hough_lines.png"
 
     def _debug_detected_quad_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"frame_{fidx:05d}_detected_quad.jpg"
+        return self.debug_dir / f"marker_detected_quad_{fidx:04d}.png"
 
     def _debug_cutout_path(self, fidx: int) -> Path:
-        return self.debug_dir / f"frame_{fidx:05d}_rectified_cutout.jpg"
+        return self.debug_dir / f"marker_rectified_cutout_{fidx:04d}.png"
 
     def _debug_frame_index(
         self, payload: ImageFrame | VideoFrame | np.ndarray, metadata: Mapping[str, Any]
@@ -127,6 +129,13 @@ class MarkerRectificationModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]
         return bool(metadata.get("force_full_rectifier", False))
 
     async def process(
+        self,
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[np.ndarray] | None:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
         self,
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,

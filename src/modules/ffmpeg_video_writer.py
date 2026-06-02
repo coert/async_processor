@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ class FfmpegVideoWriterError(RuntimeError):
 
 
 class FfmpegVideoWriterModule(BaseModule[np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -47,6 +50,14 @@ class FfmpegVideoWriterModule(BaseModule[np.ndarray]):
         message: Message[np.ndarray],
         context: ModuleContext,
     ) -> None:
+        self.process_blocking(message, context)
+        return None
+
+    def process_blocking(
+        self,
+        message: Message[np.ndarray],
+        context: ModuleContext,
+    ) -> None:
         image = message.payload
         validate_color_image(image)
         if self._frame_shape is None:
@@ -64,7 +75,9 @@ class FfmpegVideoWriterModule(BaseModule[np.ndarray]):
         try:
             self._process.stdin.write(rgb_frame.tobytes())
         except BrokenPipeError as exc:
-            raise FfmpegVideoWriterError("FFmpeg stopped while writing video frames.") from exc
+            raise FfmpegVideoWriterError(
+                "FFmpeg stopped while writing video frames."
+            ) from exc
         self.frames_written += 1
         return None
 
@@ -99,6 +112,12 @@ class FfmpegVideoWriterModule(BaseModule[np.ndarray]):
         if self._closed:
             return
         self._closed = True
+        if self._process is None:
+            return
+
+        await asyncio.to_thread(self._wait_for_process_exit)
+
+    def _wait_for_process_exit(self) -> None:
         if self._process is None:
             return
 

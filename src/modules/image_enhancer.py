@@ -133,6 +133,8 @@ def validate_color_image(image: np.ndarray) -> None:
 
 
 class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -154,6 +156,13 @@ class ImageEnhancementModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
     async def process(
+        self,
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[ImageFrame | VideoFrame | np.ndarray]:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
         self,
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,

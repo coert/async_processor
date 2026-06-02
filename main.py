@@ -127,8 +127,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--dictionary-name",
-        default="DICT_6x6_1000",
-        help="Name of the ArUco marker dictionary to use, e.g. DICT_6x6_1000.",
+        default="DICT_6X6_1000",
+        help="Name of the ArUco marker dictionary to use, e.g. DICT_6X6_1000.",
     )
     return parser.parse_args(argv)
 

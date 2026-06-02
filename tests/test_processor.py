@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import signal
+import threading
 from pathlib import Path
 
 import joblib
@@ -134,6 +135,63 @@ class SinkModule(BaseModule[str]):
         return None
 
 
+class BlockingUppercaseModule(BaseModule[str]):
+    run_in_thread = True
+
+    def __init__(self, name: str, input_queue: str) -> None:
+        super().__init__(name, input_queue)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.worker_thread_ids: list[int] = []
+
+    async def process(
+        self,
+        message: Message[str],
+        context: ModuleContext,
+    ) -> RoutedMessage[str]:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
+        self,
+        message: Message[str],
+        context: ModuleContext,
+    ) -> RoutedMessage[str]:
+        self.worker_thread_ids.append(threading.get_ident())
+        self.started.set()
+        if not self.release.wait(timeout=1):
+            raise TimeoutError("Blocking test module was not released in time.")
+        return RoutedMessage.from_payload("out", message.payload.upper())
+
+
+class FailingBlockingModule(BaseModule[str]):
+    run_in_thread = True
+
+    async def process(
+        self,
+        message: Message[str],
+        context: ModuleContext,
+    ) -> None:
+        self.process_blocking(message, context)
+        return None
+
+    def process_blocking(
+        self,
+        message: Message[str],
+        context: ModuleContext,
+    ) -> None:
+        raise RuntimeError(f"boom:{message.payload}")
+
+
+class SlowSinkModule(BaseModule[str]):
+    async def process(
+        self,
+        message: Message[str],
+        context: ModuleContext,
+    ) -> None:
+        await asyncio.sleep(0.01)
+        return None
+
+
 class ListSource:
     def __init__(self, items: list[str]) -> None:
         self.items = items
@@ -225,6 +283,78 @@ def test_graceful_shutdown_without_hanging() -> None:
         await asyncio.wait_for(processor.stop(), timeout=1)
 
         assert module.seen == ["one"]
+
+    asyncio.run(scenario())
+
+
+def test_thread_enabled_module_runs_off_event_loop_thread() -> None:
+    async def scenario() -> None:
+        processor = AsyncProcessor()
+        processor.create_queue("in")
+        processor.create_queue("out")
+        module = BlockingUppercaseModule("upper", "in")
+        processor.register_module(module)
+
+        await processor.start()
+        await processor.submit("in", "hello")
+        await asyncio.wait_for(asyncio.to_thread(module.started.wait, 1), timeout=1)
+
+        yielded_back_to_loop = False
+
+        async def heartbeat() -> None:
+            nonlocal yielded_back_to_loop
+            await asyncio.sleep(0.01)
+            yielded_back_to_loop = True
+
+        await asyncio.wait_for(heartbeat(), timeout=0.2)
+        assert yielded_back_to_loop is True
+
+        module.release.set()
+        result = await asyncio.wait_for(processor.queue("out").get(), timeout=1)
+        assert result.payload == "HELLO"
+        assert module.worker_thread_ids == [module.worker_thread_ids[0]]
+        assert module.worker_thread_ids[0] != threading.get_ident()
+        processor.queue("out").task_done()
+
+        await processor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_thread_enabled_module_exception_propagates_from_wait() -> None:
+    async def scenario() -> None:
+        processor = AsyncProcessor()
+        processor.create_queue("in")
+        processor.register_module(FailingBlockingModule("boom", "in"))
+
+        await processor.start()
+        await processor.submit("in", "payload")
+
+        with pytest.raises(RuntimeError, match="boom:payload"):
+            await asyncio.wait_for(processor.wait(), timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_processor_logs_module_timing_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        processor = AsyncProcessor()
+        processor.create_queue("in")
+        processor.register_module(SlowSinkModule("slow", "in"))
+
+        with caplog.at_level(logging.INFO, logger="src.processor"):
+            await processor.start()
+            await processor.submit("in", "hello")
+            await asyncio.wait_for(processor.queue("in").join(), timeout=1)
+            await processor.stop()
+
+        assert "Module timing summary:" in caplog.text
+        assert "slow: count=1" in caplog.text
+        assert "avg=" in caplog.text
+        assert "max=" in caplog.text
+        assert "total=" in caplog.text
 
     asyncio.run(scenario())
 
@@ -1237,7 +1367,9 @@ def test_marker_rectification_debug_enabled_writes_processing_images(
             assert debug_path.exists()
             assert cv2.imread(str(debug_path)) is not None
         assert cv2.imread(str(debug_dir / "marker_input.png")).shape == (360, 480, 3)
-        assert cv2.imread(str(debug_dir / "marker_rectified_cutout_0000.png")).shape == (
+        assert cv2.imread(
+            str(debug_dir / "marker_rectified_cutout_0000.png")
+        ).shape == (
             512,
             512,
             3,
@@ -1521,7 +1653,8 @@ def test_main_fans_out_enhanced_frames_when_gmm_model_missing(
     assert captured["annotator_output_queue"] == app_main.ANNOTATED_FRAMES_QUEUE
     assert captured["annotator_kwargs"] == {
         "debug": False,
-        "debug_dir": Path("data/debug"),
+        "debug_dir": Path("data/debug/aruco-marker-annotator"),
+        "dictionary_name": args.dictionary_name,
     }
 
 
@@ -1639,14 +1772,15 @@ def test_main_registers_gmm_fanout_path_when_model_exists(
     assert captured["annotator_output_queue"] == app_main.ANNOTATED_FRAMES_QUEUE
     assert captured["annotator_kwargs"] == {
         "debug": False,
-        "debug_dir": Path("data/debug"),
+        "debug_dir": Path("data/debug/aruco-marker-annotator"),
+        "dictionary_name": args.dictionary_name,
     }
     assert captured["gmm_input_queue"] == app_main.GMM_FRAME_QUEUE
     assert captured["gmm_output_queue"] == app_main.COLOR_MASK_QUEUE
     assert captured["gmm_kwargs"] == {
         "model_path": model_path,
         "debug": False,
-        "debug_dir": Path("data/debug"),
+        "debug_dir": Path("data/debug/gmm-color-mask"),
     }
 
 
@@ -1692,7 +1826,7 @@ def test_main_debug_flag_is_parsed_and_wired_to_optical_flow_tracker(
 
     assert captured["output_queue"] == app_main.ARUCO_DETECTIONS_QUEUE
     assert captured["debug"] is True
-    assert captured["debug_dir"] == Path("data/debug")
+    assert captured["debug_dir"] == Path("data/debug/optical-flow-marker-tracker")
 
 
 def test_main_configures_debug_logging_when_debug_flag_is_set(
@@ -2128,6 +2262,13 @@ class FakeTrackerRectifier(BaseModule[np.ndarray]):
         message: Message[np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray]:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
+        self,
+        message: Message[np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[np.ndarray]:
         self.calls += 1
         image = (
             message.payload.image
@@ -2163,8 +2304,15 @@ class CapturingTrackerRectifier(FakeTrackerRectifier):
         message: Message[np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[np.ndarray]:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
+        self,
+        message: Message[np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[np.ndarray]:
         self.seen_metadata.append(dict(message.metadata))
-        return await super().process(message, context)
+        return super().process_blocking(message, context)
 
 
 class FakeTrackerDetector(BaseModule[np.ndarray]):
@@ -2174,6 +2322,13 @@ class FakeTrackerDetector(BaseModule[np.ndarray]):
         self.calls = 0
 
     async def process(
+        self,
+        message: Message[np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[ArucoDetectionResult] | None:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
         self,
         message: Message[np.ndarray],
         context: ModuleContext,
@@ -2259,6 +2414,43 @@ def test_optical_flow_marker_tracker_fallback_seeds_state() -> None:
     asyncio.run(scenario())
 
 
+def test_optical_flow_marker_tracker_logs_timing_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        detection = aruco_detection(10, 30, 30, 20)
+        rectifier = FakeTrackerRectifier()
+        detector = FakeTrackerDetector([detection])
+        module = OpticalFlowMarkerTrackingModule(
+            name="tracker",
+            input_queue="frames",
+            output_queue="detections",
+            rectifier=rectifier,
+            detector=detector,
+        )
+
+        with caplog.at_level(
+            logging.INFO, logger="src.modules.optical_flow_marker_tracker"
+        ):
+            routed = await module.process(
+                Message(marker_corner_image([detection])), AsyncProcessor()
+            )
+            assert routed is not None
+            module.close()
+
+        assert "Tracker timing summary:" in caplog.text
+        assert "total: count=1" in caplog.text
+        assert "gray: count=1" in caplog.text
+        assert "track_state: count=1" in caplog.text
+        assert "rectifier: count=1" in caplog.text
+        assert "detector: count=1" in caplog.text
+        assert "seed_state: count=1" in caplog.text
+        assert "Tracker refresh reasons: bootstrap=1" in caplog.text
+        assert "Tracker rectifier modes: full_search=1" in caplog.text
+
+    asyncio.run(scenario())
+
+
 def test_optical_flow_marker_tracker_predicts_next_frame_without_fallback() -> None:
     async def scenario() -> None:
         detection = aruco_detection(11, 35, 35, 22)
@@ -2323,7 +2515,9 @@ def test_optical_flow_marker_tracker_predicts_next_frame_without_fallback() -> N
             dtype=np.float32,
         )
         assert np.allclose(
-            np.asarray(rectifier.seen_metadata[1]["prior_source_quad"], dtype=np.float32),
+            np.asarray(
+                rectifier.seen_metadata[1]["prior_source_quad"], dtype=np.float32
+            ),
             expected_quad,
         )
         assert "force_full_rectifier" not in rectifier.seen_metadata[1]
@@ -2479,7 +2673,9 @@ def test_optical_flow_marker_tracker_writes_failed_prediction_debug_image(
     asyncio.run(scenario())
 
 
-def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fails() -> None:
+def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fails() -> (
+    None
+):
     async def scenario() -> None:
         detection = aruco_detection(15, 35, 35, 22)
         rectifier = FakeTrackerRectifier()
@@ -2539,7 +2735,9 @@ def test_optical_flow_marker_tracker_preserves_last_quad_when_quad_tracking_fail
     asyncio.run(scenario())
 
 
-def test_optical_flow_marker_tracker_passes_prior_quad_to_fallback_after_failure() -> None:
+def test_optical_flow_marker_tracker_passes_prior_quad_to_fallback_after_failure() -> (
+    None
+):
     async def scenario() -> None:
         detection = aruco_detection(14, 35, 35, 22)
         rectifier = CapturingTrackerRectifier()
@@ -2638,7 +2836,9 @@ def test_optical_flow_marker_tracker_uses_support_points_when_exact_corners_fail
     assert confidence > 0.5
 
 
-def test_optical_flow_marker_tracker_forces_full_rectifier_on_low_quad_confidence() -> None:
+def test_optical_flow_marker_tracker_forces_full_rectifier_on_low_quad_confidence() -> (
+    None
+):
     async def scenario() -> None:
         detection = aruco_detection(20, 25, 45, 20)
         rectifier = CapturingTrackerRectifier()

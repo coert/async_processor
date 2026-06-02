@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Iterable
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -12,19 +12,19 @@ ModuleOutput = None | RoutedMessage[Any] | Iterable[RoutedMessage[Any]]
 
 
 class ModuleContext(Protocol):
-    async def put(self, queue_name: str, message: Message[Any]) -> None:
-        ...
+    async def put(self, queue_name: str, message: Message[Any]) -> None: ...
 
     async def submit(
         self,
         queue_name: str,
         payload: Any,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class BaseModule(ABC, Generic[InputT]):
+    run_in_thread = False
+
     def __init__(self, name: str, input_queue: str) -> None:
         if not name:
             raise ValueError("Module name cannot be empty.")
@@ -34,10 +34,22 @@ class BaseModule(ABC, Generic[InputT]):
         self.name = name
         self.input_queue = input_queue
 
-    @abstractmethod
     async def process(
         self,
         message: Message[InputT],
         context: ModuleContext,
     ) -> ModuleOutput:
-        ...
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement process() or enable run_in_thread "
+            "and implement process_blocking()."
+        )
+
+    def process_blocking(
+        self,
+        message: Message[InputT],
+        context: ModuleContext,
+    ) -> ModuleOutput:
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement process_blocking() when "
+            "run_in_thread is enabled."
+        )

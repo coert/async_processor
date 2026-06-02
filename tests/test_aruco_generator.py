@@ -17,7 +17,7 @@ from generate_aruco_markers import (
 
 
 def test_marker_size_is_inferred_for_standard_dictionaries() -> None:
-    assert marker_size_for_dictionary("aruco") == 5
+    assert marker_size_for_dictionary("aruco_original") == 5
     assert marker_size_for_dictionary("4x4_1000") == 4
     assert marker_size_for_dictionary("7x7_1000") == 7
     assert marker_size_for_dictionary("mip_36h12") == 6
@@ -67,7 +67,7 @@ def test_load_marker_dictionaries_defaults_to_standard_non_apriltag(tmp_path) ->
     dict_json.write_text(
         json.dumps(
             {
-                "aruco": [[0, 0, 0, 0]],
+                "aruco_original": [[0, 0, 0, 0]],
                 "4x4_1000": [[0, 0]],
                 "april_16h5": [[0, 0]],
             }
@@ -76,7 +76,10 @@ def test_load_marker_dictionaries_defaults_to_standard_non_apriltag(tmp_path) ->
 
     dictionaries = load_marker_dictionaries(dict_json)
 
-    assert [dictionary.name for dictionary in dictionaries] == ["aruco", "4x4_1000"]
+    assert [dictionary.name for dictionary in dictionaries] == [
+        "aruco_original",
+        "4x4_1000",
+    ]
 
 
 def test_generate_markers_writes_pngs_and_manifest(tmp_path) -> None:
@@ -88,8 +91,8 @@ def test_generate_markers_writes_pngs_and_manifest(tmp_path) -> None:
     generated = generate_markers(dictionaries, output_dir, image_size=12, border_bits=1)
 
     assert len(generated) == 2
-    first_image = output_dir / "4x4_1000" / "4x4_1000_0000.png"
-    second_image = output_dir / "4x4_1000" / "4x4_1000_0001.png"
+    first_image = output_dir / "4X4_1000" / "4x4_1000_0000.png"
+    second_image = output_dir / "4X4_1000" / "4x4_1000_0001.png"
     assert first_image.exists()
     assert second_image.exists()
     assert cv2.imread(str(first_image), cv2.IMREAD_GRAYSCALE).shape == (12, 12)

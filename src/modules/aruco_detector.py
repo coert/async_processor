@@ -31,6 +31,8 @@ class ArucoDetectionResult:
 
 
 class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
+    run_in_thread = True
+
     def __init__(
         self,
         name: str,
@@ -148,6 +150,19 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
                 parameters=self.parameters,
             )
         return list(corners), ids, list(rejected), processed
+
+    def _unpack_detection_result(
+        self,
+        detection_result: tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray]]
+        | tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray], np.ndarray],
+        image: np.ndarray,
+    ) -> tuple[list[np.ndarray], np.ndarray | None, list[np.ndarray], np.ndarray]:
+        if len(detection_result) == 4:
+            return detection_result
+        if len(detection_result) == 3:
+            corners, ids, rejected = detection_result
+            return corners, ids, rejected, self._preprocess_for_detection(image)
+        raise ValueError("Detector must return 3 or 4 values.")
 
     @staticmethod
     def _marker_ids(ids: np.ndarray | None) -> list[int]:
@@ -282,8 +297,8 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
     @staticmethod
     def _debug_filename(prefix: str, stem: str, frame_index: int | None = None) -> str:
         if frame_index is None:
-            return f"frame_{stem}.jpg"
-        return f"frame_{frame_index:05d}_{stem}.jpg"
+            return f"{prefix}{stem}.png"
+        return f"{prefix}{stem}_{frame_index:04d}.png"
 
     def _write_debug_images(
         self,
@@ -313,6 +328,13 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         message: Message[ImageFrame | VideoFrame | np.ndarray],
         context: ModuleContext,
     ) -> RoutedMessage[ArucoDetectionResult] | None:
+        return self.process_blocking(message, context)
+
+    def process_blocking(
+        self,
+        message: Message[ImageFrame | VideoFrame | np.ndarray],
+        context: ModuleContext,
+    ) -> RoutedMessage[ArucoDetectionResult] | None:
         payload = message.payload
         frame_index = self._debug_frame_index(payload, message.metadata)
         image = (
@@ -320,11 +342,13 @@ class ArucoDetectionModule(BaseModule[ImageFrame | VideoFrame | np.ndarray]):
         )
         validate_color_image(image)
 
-        raw_corners, raw_ids, raw_rejected, raw_preprocessed = self._detect(image)
+        raw_corners, raw_ids, raw_rejected, raw_preprocessed = (
+            self._unpack_detection_result(self._detect(image), image)
+        )
         if self.input_border_pixels > 0:
             padded_image = self._pad_input_image(image, self.input_border_pixels)
             padded_corners, padded_ids, padded_rejected, padded_preprocessed = (
-                self._detect(padded_image)
+                self._unpack_detection_result(self._detect(padded_image), padded_image)
             )
         else:
             padded_image = image

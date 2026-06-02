@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from .messages import Message, RoutedMessage
@@ -31,11 +33,30 @@ class DuplicateModuleError(ProcessorError, ValueError):
 _STOP = object()
 
 
+@dataclass
+class _ModuleTimingStats:
+    processed_count: int = 0
+    total_seconds: float = 0.0
+    max_seconds: float = 0.0
+
+    def record(self, elapsed_seconds: float) -> None:
+        self.processed_count += 1
+        self.total_seconds += elapsed_seconds
+        self.max_seconds = max(self.max_seconds, elapsed_seconds)
+
+    @property
+    def average_seconds(self) -> float:
+        if self.processed_count == 0:
+            return 0.0
+        return self.total_seconds / self.processed_count
+
+
 class AsyncProcessor:
     def __init__(self) -> None:
         self._queues: dict[str, asyncio.Queue[Any]] = {}
         self._modules: dict[str, BaseModule[Any]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._module_timing: dict[str, _ModuleTimingStats] = {}
         self._running = False
         self._stopping = False
 
@@ -89,6 +110,7 @@ class AsyncProcessor:
             )
 
         self._modules[module.name] = module
+        self._module_timing[module.name] = _ModuleTimingStats()
         logger.info(
             "Registered module %s on input queue %s",
             module.name,
@@ -158,7 +180,13 @@ class AsyncProcessor:
                     logger.debug("Module task stopping: %s", module.name)
                     return
 
-                result = await module.process(item, self)
+                started_at = time.perf_counter()
+                try:
+                    result = await self._process_message(module, item)
+                finally:
+                    self._module_timing[module.name].record(
+                        time.perf_counter() - started_at
+                    )
                 await self._route_outputs(result)
             except Exception:
                 logger.exception("Module failed: %s", module.name)
@@ -166,6 +194,15 @@ class AsyncProcessor:
                 raise
             finally:
                 queue.task_done()
+
+    async def _process_message(
+        self,
+        module: BaseModule[Any],
+        message: Message[Any],
+    ) -> ModuleOutput:
+        if module.run_in_thread:
+            return await asyncio.to_thread(module.process_blocking, message, self)
+        return await module.process(message, self)
 
     async def _route_outputs(self, result: ModuleOutput) -> None:
         for routed_message in self._normalize_outputs(result):
@@ -216,6 +253,7 @@ class AsyncProcessor:
         tasks = list(self._tasks.values())
         results = await asyncio.gather(*tasks, return_exceptions=True)
         close_error = await self._close_modules()
+        self._log_timing_summary()
         self._tasks.clear()
         self._running = False
         self._stopping = False
@@ -243,3 +281,27 @@ class AsyncProcessor:
                 if captured_error is None:
                     captured_error = exc
         return captured_error
+
+    def _log_timing_summary(self) -> None:
+        timed_modules = [
+            (module_name, stats)
+            for module_name, stats in self._module_timing.items()
+            if stats.processed_count > 0
+        ]
+        if not timed_modules:
+            return
+
+        logger.info("Module timing summary:")
+        for module_name, stats in sorted(
+            timed_modules,
+            key=lambda item: item[1].total_seconds,
+            reverse=True,
+        ):
+            logger.info(
+                "  %s: count=%s avg=%.2fms max=%.2fms total=%.2fms",
+                module_name,
+                stats.processed_count,
+                stats.average_seconds * 1000.0,
+                stats.max_seconds * 1000.0,
+                stats.total_seconds * 1000.0,
+            )
